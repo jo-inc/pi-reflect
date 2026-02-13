@@ -28,6 +28,8 @@ Requires pi with an LLM API key configured. Each run makes one LLM call (~$0.05�
 /reflect                    # use saved default target
 /reflect-config             # show configured targets
 /reflect-history            # show recent runs
+/reflect-stats              # correction rate trend + rule recidivism
+/reflect-backfill           # bootstrap stats for all historical sessions
 ```
 
 First run asks if you want to save the target. After that, just `/reflect`.
@@ -37,7 +39,19 @@ First run asks if you want to save the target. After that, just `/reflect`.
 1. Extracts recent pi session transcripts (default: last 24 hours)
 2. Sends them + your target file to an LLM to find correction patterns — redirections, frustration, repeated explanations
 3. Applies surgical edits: strengthens violated rules, adds new rules for recurring patterns (2+ occurrences only)
-4. Backs up the original before any changes. Skips ambiguous matches, duplicates, and suspiciously large deletions.
+4. Backs up the original before any changes. Skips ambiguous matches, duplicates, and suspiciously large deletions. Auto-commits if the target is symlinked into a git repo.
+
+## Impact Metrics
+
+`/reflect-stats` tracks two signals to measure whether reflection is working:
+
+- **Correction Rate** — `corrections / sessions` per run, plotted over time. Trending down = the agent is making fewer mistakes. Each data point uses the **source date** (when the sessions happened), not when reflect ran.
+
+- **Rule Recidivism** — which sections get edited repeatedly. A rule strengthened 3+ times means it isn't sticking. Sections edited once and never again are "resolved."
+
+Both metrics are grouped by target file.
+
+`/reflect-backfill` bootstraps stats by analyzing all historical session dates in dry-run mode (no file edits). Shows estimated cost and asks for confirmation before running.
 
 ## Configuration
 
