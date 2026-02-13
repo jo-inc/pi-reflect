@@ -1,0 +1,30 @@
+{
+  "name": "pi-reflect",
+  "version": "1.0.0",
+  "description": "Self-improving behavioral files for pi coding agents. Analyzes session transcripts for correction patterns and makes surgical edits to prevent recurrence.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "self-improvement",
+    "agents-md",
+    "behavioral-rules",
+    "reflection"
+  ],
+  "license": "MIT",
+  "author": "Pradeep Elankumaran <pradeepe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skyfallsin/pi-reflect"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*"
+  }
+}
