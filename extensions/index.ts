@@ -2,9 +2,11 @@
  * Reflect — Self-improving behavioral files for pi coding agents.
  *
  * Commands:
- *   /reflect [path]     — Run reflection on a file (or configured default)
- *   /reflect-config     — Show/edit reflection configuration
- *   /reflect-history    — Show recent reflection runs
+ *   /reflect [path]      — Run reflection on a file (or configured default)
+ *   /reflect-config      — Show/edit reflection configuration
+ *   /reflect-history     — Show recent reflection runs
+ *   /reflect-stats       — Show impact metrics (correction rate trend + rule recidivism)
+ *   /reflect-backfill    — Backfill stats for all historical session dates
  *
  * Headless execution for cron/launchd:
  *   pi -p --no-session "/reflect /path/to/AGENTS.md"
@@ -15,6 +17,7 @@ import * as path from "node:path";
 
 import {
 	type ReflectTarget,
+	type ReflectRun,
 	type NotifyFn,
 	DEFAULT_TARGET,
 	loadConfig,
@@ -23,6 +26,8 @@ import {
 	saveHistory,
 	resolvePath,
 	runReflection,
+	collectTranscriptsForDate,
+	getAvailableSessionDates,
 	CONFIG_FILE,
 } from "./reflect.js";
 
@@ -148,6 +153,289 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				console.log(lines.join("\n"));
 			}
+		},
+	});
+
+	// /reflect-stats — show impact metrics
+	pi.registerCommand("reflect-stats", {
+		description: "Show reflection impact metrics: correction rate trend and rule recidivism, grouped by target file",
+		handler: async (args, ctx) => {
+			const history = loadHistory();
+
+			if (history.length < 2) {
+				const msg = "Need at least 2 reflection runs for stats. Use /reflect to build history.";
+				if (ctx.hasUI) { ctx.ui.notify(msg, "info"); } else { console.log(msg); }
+				return;
+			}
+
+			function getSourceDate(r: ReflectRun): string {
+				return r.sourceDate ?? (r as any).date ?? r.timestamp.slice(0, 10);
+			}
+
+			// Group runs by target file
+			const byTarget = new Map<string, ReflectRun[]>();
+			for (const run of history) {
+				const key = run.targetPath;
+				const list = byTarget.get(key) ?? [];
+				list.push(run);
+				byTarget.set(key, list);
+			}
+
+			const output: string[] = [];
+			let targetIdx = 0;
+
+			for (const [targetPath, runs] of byTarget) {
+				const fileName = path.basename(targetPath);
+				if (targetIdx > 0) output.push("", "---", "");
+				output.push(`# ${fileName}`);
+				output.push(`_${targetPath}_`);
+				output.push("");
+
+				// --- Correction Rate Trend ---
+				output.push("### Correction Rate (corrections per session)");
+				output.push("");
+
+				const ratesWithDates = runs.map((r) => ({
+					sourceDate: getSourceDate(r),
+					rate: r.correctionRate ?? (r.sessionsAnalyzed > 0 ? r.correctionsFound / r.sessionsAnalyzed : 0),
+					corrections: r.correctionsFound,
+					sessions: r.sessionsAnalyzed,
+				}));
+
+				ratesWithDates.sort((a, b) => a.sourceDate.localeCompare(b.sourceDate));
+
+				for (const r of ratesWithDates) {
+					const bar = "\u2588".repeat(Math.round(r.rate * 10));
+					const rateStr = r.rate.toFixed(2);
+					output.push(`${r.sourceDate}  ${rateStr}  ${bar}  (${r.corrections}/${r.sessions} sessions)`);
+				}
+
+				if (ratesWithDates.length >= 3) {
+					const firstHalf = ratesWithDates.slice(0, Math.floor(ratesWithDates.length / 2));
+					const secondHalf = ratesWithDates.slice(Math.floor(ratesWithDates.length / 2));
+					const avgFirst = firstHalf.reduce((s, r) => s + r.rate, 0) / firstHalf.length;
+					const avgSecond = secondHalf.reduce((s, r) => s + r.rate, 0) / secondHalf.length;
+					const delta = avgSecond - avgFirst;
+					const pct = avgFirst > 0 ? Math.abs(delta / avgFirst * 100).toFixed(0) : "N/A";
+
+					output.push("");
+					if (delta < -0.01) {
+						output.push(`Trend: \u2193 improving (${pct}% fewer corrections per session)`);
+					} else if (delta > 0.01) {
+						output.push(`Trend: \u2191 worsening (${pct}% more corrections per session)`);
+					} else {
+						output.push(`Trend: \u2194 flat`);
+					}
+				}
+
+				// --- Rule Recidivism ---
+				output.push("");
+				output.push("### Rule Recidivism (sections edited multiple times)");
+				output.push("");
+
+				const sectionCounts = new Map<string, { count: number; types: string[]; reasons: string[]; dates: string[] }>();
+
+				for (const run of runs) {
+					if (!run.edits) continue;
+					for (const edit of run.edits) {
+						const key = edit.section.toLowerCase().trim();
+						const existing = sectionCounts.get(key) ?? { count: 0, types: [], reasons: [], dates: [] };
+						existing.count++;
+						existing.types.push(edit.type);
+						existing.reasons.push(edit.reason);
+						existing.dates.push(getSourceDate(run));
+						sectionCounts.set(key, existing);
+					}
+				}
+
+				if (sectionCounts.size === 0) {
+					output.push("No per-edit data yet. Run /reflect to start collecting.");
+				} else {
+					const sorted = [...sectionCounts.entries()].sort((a, b) => b[1].count - a[1].count);
+					const recidivists = sorted.filter(([, v]) => v.count >= 2);
+					const resolved = sorted.filter(([, v]) => v.count === 1);
+
+					if (recidivists.length > 0) {
+						output.push("**Recurring (not sticking):**");
+						for (const [section, data] of recidivists) {
+							const strengthened = data.types.filter((t) => t === "strengthen").length;
+							const added = data.types.filter((t) => t === "add").length;
+							const dateRange = `${data.dates[0]} \u2192 ${data.dates[data.dates.length - 1]}`;
+							output.push(`- **${section}** \u00d7${data.count} (${strengthened} strengthen, ${added} add) [${dateRange}]`);
+							const lastReason = data.reasons[data.reasons.length - 1];
+							if (lastReason) {
+								output.push(`  Last: ${lastReason.length > 120 ? lastReason.slice(0, 120) + "..." : lastReason}`);
+							}
+						}
+					} else {
+						output.push("**No recurring violations.** All rules stuck after first edit.");
+					}
+
+					if (resolved.length > 0) {
+						output.push("");
+						output.push(`**Resolved (edited once, not repeated):** ${resolved.length} rule(s)`);
+						for (const [section] of resolved.slice(0, 5)) {
+							output.push(`- ${section}`);
+						}
+						if (resolved.length > 5) {
+							output.push(`  ...and ${resolved.length - 5} more`);
+						}
+					}
+				}
+
+				targetIdx++;
+			}
+
+			const text = output.join("\n");
+			if (ctx.hasUI) {
+				ctx.ui.notify(text, "info");
+			} else {
+				console.log(text);
+			}
+		},
+	});
+
+	// /reflect-backfill — analyze all historical session dates to bootstrap stats
+	pi.registerCommand("reflect-backfill", {
+		description: "Backfill reflection stats for all available session dates (dry run — no file edits)",
+		handler: async (_args, ctx) => {
+			modelRegistryRef = ctx.modelRegistry;
+
+			if (!ctx.hasUI) {
+				console.error("reflect-backfill requires interactive mode.");
+				return;
+			}
+
+			const config = loadConfig();
+			if (config.targets.length === 0) {
+				ctx.ui.notify("No targets configured. Use /reflect <path> to add one.", "info");
+				return;
+			}
+
+			// Only backfill pi-sessions targets
+			const piSessionTargets = config.targets.filter(
+				(t) => !t.transcriptSource || t.transcriptSource.type === "pi-sessions",
+			);
+
+			if (piSessionTargets.length === 0) {
+				ctx.ui.notify("No pi-sessions targets to backfill. Command-based transcript sources are not supported for backfill.", "info");
+				return;
+			}
+
+			const allDates = getAvailableSessionDates();
+			if (allDates.length === 0) {
+				ctx.ui.notify("No session files found.", "info");
+				return;
+			}
+
+			// For each target, find dates already covered
+			const history = loadHistory();
+			const plan: { target: ReflectTarget; dates: string[] }[] = [];
+
+			for (const target of piSessionTargets) {
+				const targetPath = resolvePath(target.path);
+				const coveredDates = new Set(
+					history
+						.filter((r) => r.targetPath === targetPath)
+						.map((r) => r.sourceDate ?? (r as any).date)
+						.filter(Boolean),
+				);
+
+				const missingDates = allDates.filter((d) => !coveredDates.has(d));
+				if (missingDates.length > 0) {
+					plan.push({ target, dates: missingDates });
+				}
+			}
+
+			if (plan.length === 0) {
+				ctx.ui.notify("All dates already covered. Nothing to backfill.", "info");
+				return;
+			}
+
+			// Resolve model for cost estimation
+			const { getModel } = await import("@mariozechner/pi-ai");
+			const target0 = plan[0].target;
+			const [provider, modelId] = target0.model.split("/", 2);
+			let model = getModel(provider as any, modelId as any);
+			if (!model) { model = modelRegistryRef?.find(provider, modelId); }
+
+			const totalCalls = plan.reduce((s, p) => s + p.dates.length, 0);
+			const estInputTokensPerCall = 150_000;
+			const estOutputTokensPerCall = 2_000;
+
+			let costEstimate = "unknown";
+			if (model?.cost) {
+				const inputCost = (totalCalls * estInputTokensPerCall * model.cost.input) / 1_000_000;
+				const outputCost = (totalCalls * estOutputTokensPerCall * model.cost.output) / 1_000_000;
+				const totalCost = inputCost + outputCost;
+				costEstimate = `$${totalCost.toFixed(2)}`;
+			}
+
+			const planLines: string[] = [];
+			planLines.push("**Backfill plan (dry run — no file edits):**");
+			planLines.push("");
+			for (const p of plan) {
+				const fileName = path.basename(p.target.path);
+				planLines.push(`- **${fileName}**: ${p.dates.length} date(s) [${p.dates[0]} \u2192 ${p.dates[p.dates.length - 1]}]`);
+			}
+			planLines.push("");
+			planLines.push(`**Total:** ${totalCalls} LLM call(s) using ${target0.model}`);
+			planLines.push(`**Estimated cost:** ${costEstimate}`);
+
+			ctx.ui.notify(planLines.join("\n"), "info");
+
+			const proceed = await ctx.ui.confirm(
+				"Run backfill?",
+				`This will make ${totalCalls} LLM calls (~${costEstimate}). No files will be modified — only stats history is updated.`,
+			);
+
+			if (!proceed) {
+				ctx.ui.notify("Backfill cancelled.", "info");
+				return;
+			}
+
+			let completed = 0;
+			let failed = 0;
+			const updatedHistory = loadHistory();
+
+			for (const p of plan) {
+				const fileName = path.basename(p.target.path);
+
+				for (const date of p.dates) {
+					ctx.ui.notify(`[${completed + failed + 1}/${totalCalls}] ${fileName} — ${date}...`, "info");
+
+					const transcriptResult = await collectTranscriptsForDate(date, p.target.maxSessionBytes);
+
+					if (!transcriptResult.transcripts || transcriptResult.includedCount === 0) {
+						ctx.ui.notify(`  ${date}: no substantive sessions, skipping`, "info");
+						failed++;
+						continue;
+					}
+
+					const notify: NotifyFn = (msg, level) => {
+						ctx.ui.notify(`  ${date}: ${msg}`, level);
+					};
+
+					const run = await runReflection(p.target, modelRegistryRef, notify, undefined, {
+						sourceDateOverride: date,
+						transcriptsOverride: transcriptResult,
+						dryRun: true,
+					});
+
+					if (run) {
+						updatedHistory.push(run);
+						saveHistory(updatedHistory);
+						completed++;
+					} else {
+						failed++;
+					}
+				}
+			}
+
+			ctx.ui.notify(
+				`Backfill complete: ${completed} succeeded, ${failed} skipped/failed out of ${totalCalls} dates.`,
+				completed > 0 ? "info" : "warning",
+			);
 		},
 	});
 }

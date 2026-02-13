@@ -39,6 +39,12 @@ export interface ReflectConfig {
 	targets: ReflectTarget[];
 }
 
+export interface EditRecord {
+	type: "strengthen" | "add";
+	section: string;
+	reason: string;
+}
+
 export interface ReflectRun {
 	timestamp: string;
 	targetPath: string;
@@ -47,6 +53,10 @@ export interface ReflectRun {
 	editsApplied: number;
 	summary: string;
 	diffLines: number;
+	correctionRate: number;
+	edits?: EditRecord[];
+	sourceDate?: string;
+	date?: string; // legacy field from bash-script/batch runs
 }
 
 export interface SessionExchange {
@@ -83,6 +93,12 @@ export interface AnalysisEdit {
 	new_text: string;
 	after_text?: string | null;
 	reason?: string;
+}
+
+export interface ReflectionOptions {
+	sourceDateOverride?: string;
+	transcriptsOverride?: TranscriptResult;
+	dryRun?: boolean;
 }
 
 export type NotifyFn = (msg: string, level: "info" | "warning" | "error") => void;
@@ -250,23 +266,51 @@ export function formatSessionTranscript(exchanges: SessionExchange[], sessionId:
 	return lines.join("\n");
 }
 
-export async function collectTranscripts(lookbackDays: number, maxBytes: number, sessionsDir?: string): Promise<TranscriptResult> {
-	const effectiveSessionsDir = sessionsDir ?? SESSIONS_DIR;
+// --- Shared session scanning logic ---
 
-	const targetDates: string[] = [];
-	for (let i = 1; i <= lookbackDays; i++) {
-		const d = new Date();
-		d.setDate(d.getDate() - i);
-		targetDates.push(d.toISOString().slice(0, 10));
-	}
-
+function scanSessionFiles(
+	effectiveSessionsDir: string,
+	targetDates: string[],
+	maxBytes: number,
+): { allSessions: SessionData[]; totalScanned: number } {
 	// Include "next day" for UTC/local timezone overlap
 	const nextDates = targetDates.map((d) => {
-		const next = new Date(d);
+		const next = new Date(d + "T00:00:00Z");
 		next.setDate(next.getDate() + 1);
 		return next.toISOString().slice(0, 10);
 	});
 	const allDates = new Set([...targetDates, ...nextDates]);
+
+	const sessionDirs: string[] = [];
+	try {
+		for (const dir of fs.readdirSync(effectiveSessionsDir)) {
+			if (dir.includes("var-folders")) continue;
+			const fullDir = path.join(effectiveSessionsDir, dir);
+			if (fs.statSync(fullDir).isDirectory()) {
+				sessionDirs.push(fullDir);
+			}
+		}
+	} catch {
+		return { allSessions: [], totalScanned: 0 };
+	}
+
+	return { allSessions: [], totalScanned: 0, _sessionDirs: sessionDirs, _allDates: allDates, _targetDates: new Set(targetDates) } as any;
+}
+
+async function collectSessionsForDates(
+	targetDates: string[],
+	maxBytes: number,
+	sessionsDir?: string,
+): Promise<TranscriptResult> {
+	const effectiveSessionsDir = sessionsDir ?? SESSIONS_DIR;
+
+	const nextDates = targetDates.map((d) => {
+		const next = new Date(d + "T00:00:00Z");
+		next.setDate(next.getDate() + 1);
+		return next.toISOString().slice(0, 10);
+	});
+	const allDates = new Set([...targetDates, ...nextDates]);
+	const targetDateSet = new Set(targetDates);
 
 	const sessionDirs: string[] = [];
 	try {
@@ -297,8 +341,7 @@ export async function collectTranscripts(lookbackDays: number, maxBytes: number,
 			const fileDate = file.slice(0, 10);
 			if (!allDates.has(fileDate)) continue;
 
-			// For "next day" files, only include early hours (UTC overlap)
-			if (!targetDates.includes(fileDate)) {
+			if (!targetDateSet.has(fileDate)) {
 				try {
 					const hour = parseInt(file.slice(11, 13));
 					if (hour >= 8) continue;
@@ -332,7 +375,6 @@ export async function collectTranscripts(lookbackDays: number, maxBytes: number,
 		return { transcripts: "", sessionCount: totalScanned, includedCount: 0 };
 	}
 
-	// Sort by user interaction density (more back-and-forth = more likely corrections)
 	allSessions.sort((a, b) => {
 		const densityA = a.userCount / Math.max(a.exchangeCount, 1);
 		const densityB = b.userCount / Math.max(b.exchangeCount, 1);
@@ -340,7 +382,6 @@ export async function collectTranscripts(lookbackDays: number, maxBytes: number,
 		return b.userCount - a.userCount;
 	});
 
-	// Build output within budget
 	const parts: string[] = [];
 	let currentSize = 0;
 	let included = 0;
@@ -365,6 +406,20 @@ export async function collectTranscripts(lookbackDays: number, maxBytes: number,
 	};
 }
 
+export async function collectTranscripts(lookbackDays: number, maxBytes: number, sessionsDir?: string): Promise<TranscriptResult> {
+	const targetDates: string[] = [];
+	for (let i = 1; i <= lookbackDays; i++) {
+		const d = new Date();
+		d.setDate(d.getDate() - i);
+		targetDates.push(d.toISOString().slice(0, 10));
+	}
+	return collectSessionsForDates(targetDates, maxBytes, sessionsDir);
+}
+
+export async function collectTranscriptsForDate(targetDate: string, maxBytes: number, sessionsDir?: string): Promise<TranscriptResult> {
+	return collectSessionsForDates([targetDate], maxBytes, sessionsDir);
+}
+
 export async function collectTranscriptsFromCommand(command: string, lookbackDays: number, maxBytes: number): Promise<TranscriptResult> {
 	const { execSync } = await import("node:child_process");
 	const interpolated = command.replace(/\{lookbackDays\}/g, String(lookbackDays));
@@ -387,6 +442,27 @@ export async function collectTranscriptsFromCommand(command: string, lookbackDay
 	} catch {
 		return { transcripts: "", sessionCount: 0, includedCount: 0 };
 	}
+}
+
+// --- Scan available session dates ---
+
+export function getAvailableSessionDates(): string[] {
+	const dates = new Set<string>();
+	try {
+		for (const dir of fs.readdirSync(SESSIONS_DIR)) {
+			if (dir.includes("var-folders")) continue;
+			const fullDir = path.join(SESSIONS_DIR, dir);
+			if (!fs.statSync(fullDir).isDirectory()) continue;
+			for (const file of fs.readdirSync(fullDir)) {
+				if (!file.endsWith(".jsonl")) continue;
+				const fileDate = file.slice(0, 10);
+				if (/^\d{4}-\d{2}-\d{2}$/.test(fileDate)) {
+					dates.add(fileDate);
+				}
+			}
+		}
+	} catch {}
+	return [...dates].sort();
 }
 
 // --- LLM prompt ---
@@ -538,6 +614,7 @@ export async function runReflection(
 	modelRegistry: any,
 	notify: NotifyFn,
 	deps?: RunReflectionDeps,
+	options?: ReflectionOptions,
 ): Promise<ReflectRun | null> {
 	const targetPath = resolvePath(target.path);
 
@@ -553,10 +630,12 @@ export async function runReflection(
 	}
 
 	// Collect transcripts
-	notify(`Extracting transcripts (last ${target.lookbackDays} day(s))...`, "info");
 	let transcriptResult: TranscriptResult;
 
-	if (target.transcriptSource.type === "command" && target.transcriptSource.command) {
+	if (options?.transcriptsOverride) {
+		transcriptResult = options.transcriptsOverride;
+	} else if (target.transcriptSource.type === "command" && target.transcriptSource.command) {
+		notify(`Extracting transcripts (last ${target.lookbackDays} day(s))...`, "info");
 		const fn = deps?.collectTranscriptsFromCommandFn ?? collectTranscriptsFromCommand;
 		transcriptResult = await fn(
 			target.transcriptSource.command,
@@ -564,6 +643,7 @@ export async function runReflection(
 			target.maxSessionBytes,
 		);
 	} else {
+		notify(`Extracting transcripts (last ${target.lookbackDays} day(s))...`, "info");
 		const fn = deps?.collectTranscriptsFn ?? collectTranscripts;
 		transcriptResult = await fn(
 			target.lookbackDays,
@@ -632,16 +712,59 @@ export async function runReflection(
 	}
 
 	const edits: AnalysisEdit[] = analysis.edits ?? [];
+	const correctionsFound = analysis.corrections_found ?? 0;
+	const correctionRate = includedCount > 0 ? correctionsFound / includedCount : 0;
+
+	// sourceDate = the date of sessions being analyzed, not when reflect ran
+	let sourceDateStr: string;
+	if (options?.sourceDateOverride) {
+		sourceDateStr = options.sourceDateOverride;
+	} else {
+		const sourceDate = new Date();
+		sourceDate.setDate(sourceDate.getDate() - target.lookbackDays);
+		sourceDateStr = sourceDate.toISOString().slice(0, 10);
+	}
+
 	if (edits.length === 0) {
 		notify(`No edits needed. ${analysis.summary ?? ""}`, "info");
 		return {
 			timestamp: new Date().toISOString(),
 			targetPath,
 			sessionsAnalyzed: includedCount,
-			correctionsFound: analysis.corrections_found ?? 0,
+			correctionsFound,
 			editsApplied: 0,
 			summary: analysis.summary ?? "No edits needed.",
 			diffLines: 0,
+			correctionRate,
+			edits: [],
+			sourceDate: sourceDateStr,
+		};
+	}
+
+	// In dryRun mode, skip applying edits — just record the analysis
+	if (options?.dryRun) {
+		const editRecords: EditRecord[] = edits
+			.filter((e: any) => e.section && e.reason)
+			.map((e: any) => ({
+				type: e.type ?? "add",
+				section: e.section,
+				reason: e.reason,
+			}));
+
+		const summary = analysis.summary ?? `${edits.length} edits proposed (dry run).`;
+		notify(`[dry run] ${summary}`, "info");
+
+		return {
+			timestamp: new Date().toISOString(),
+			targetPath,
+			sessionsAnalyzed: includedCount,
+			correctionsFound,
+			editsApplied: 0,
+			summary,
+			diffLines: 0,
+			correctionRate,
+			edits: editRecords,
+			sourceDate: sourceDateStr,
 		};
 	}
 
@@ -686,14 +809,44 @@ export async function runReflection(
 	const summary = analysis.summary ?? `${applied} edits applied from ${includedCount} sessions.`;
 	notify(summary, "info");
 
+	// If target is a symlink into a git repo, commit the change
+	try {
+		const realPath = fs.realpathSync(targetPath);
+		const repoDir = path.dirname(realPath);
+		if (fs.existsSync(path.join(repoDir, ".git"))) {
+			const { execSync } = require("node:child_process");
+			const fileName = path.basename(realPath);
+			execSync(`git add "${fileName}" && git commit -m "reflect: ${sourceDateStr} — ${applied} edits from ${includedCount} sessions" --no-verify`, {
+				cwd: repoDir,
+				encoding: "utf-8",
+				timeout: 10_000,
+			});
+			notify(`Committed to ${path.basename(repoDir)}`, "info");
+		}
+	} catch {
+		// Not in a git repo or commit failed — that's fine
+	}
+
+	// Extract per-edit detail for recidivism tracking
+	const editRecords: EditRecord[] = edits
+		.filter((e: any) => e.section && e.reason)
+		.map((e: any) => ({
+			type: e.type ?? "add",
+			section: e.section,
+			reason: e.reason,
+		}));
+
 	return {
 		timestamp: new Date().toISOString(),
 		targetPath,
 		sessionsAnalyzed: includedCount,
-		correctionsFound: analysis.corrections_found ?? 0,
+		correctionsFound,
 		editsApplied: applied,
 		summary,
 		diffLines,
+		correctionRate,
+		edits: editRecords,
+		sourceDate: sourceDateStr,
 	};
 }
 
