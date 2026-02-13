@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="logo.png" alt="pi-reflect" width="300">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.png" width="300">
+    <img src="logo.png" alt="pi-reflect" width="300">
+  </picture>
 </p>
 
 # pi-reflect
