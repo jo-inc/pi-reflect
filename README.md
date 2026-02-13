@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="pi-reflect" width="300">
+</p>
+
 # pi-reflect
 
 Self-improving behavioral files for [pi](https://github.com/badlogic/pi-mono) coding agents.
