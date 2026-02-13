@@ -2,11 +2,16 @@
 
 Self-improving behavioral files for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
-You write an `AGENTS.md` (or any markdown file that guides your coding agent's behavior). Over time, the agent still makes mistakes you've already addressed — it ignores rules, over-engineers, doesn't read before acting. You correct it. Again.
+Most coding agents support an `AGENTS.md` file (or similar) — a markdown file in your repo that tells the agent how to behave: what to read before acting, how to handle git, when to ask vs just do, etc. Over time you add rules when the agent screws up. But it keeps screwing up in the same ways because the rules aren't strong enough, or the pattern isn't covered yet.
 
 **pi-reflect** closes the loop. It reads your recent session transcripts, finds the places where you had to redirect, correct, or express frustration with the agent, and makes surgical edits to your behavioral file to prevent recurrence.
 
-Think of it as a feedback loop: **you correct the agent → reflect strengthens the rules → the agent stops making that mistake**.
+**you correct the agent → reflect strengthens the rules → the agent stops making that mistake.**
+
+## Prerequisites
+
+- [pi](https://github.com/badlogic/pi-mono) installed and configured
+- An API key for at least one LLM provider (Anthropic, Google, OpenAI, etc.) configured in pi — reflect uses it to analyze your transcripts. Each run makes one LLM call (~600KB of context). Expect ~$0.05–0.15 per run with Sonnet.
 
 ## Install
 
@@ -23,10 +28,12 @@ pi install git:github.com/skyfallsin/pi-reflect
 That's it. Reflect will:
 
 1. Extract your recent pi session transcripts (last 24 hours by default)
-2. Send them to an LLM along with your target file
+2. Send them + your target file to an LLM
 3. Identify correction patterns — real friction, not false positives
 4. Apply surgical edits: strengthen existing rules that were violated, add new rules for recurring patterns
 5. Back up the original file before any changes
+
+The path is resolved relative to your current working directory. Absolute paths work too.
 
 The first time you run it, it'll ask if you want to save the target for next time. After that, just `/reflect`.
 
@@ -60,9 +67,9 @@ Saved in `~/.pi/agent/reflect.json`. Created automatically when you save a targe
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `path` | *(required)* | Absolute path to the markdown file to improve |
+| `path` | *(required)* | Path to the markdown file to improve (absolute, or `~` for home) |
 | `schedule` | `"daily"` | `"daily"` or `"manual"` — metadata only, actual scheduling is external |
-| `model` | `"anthropic/claude-sonnet-4-5"` | `provider/model-id` for the analysis LLM |
+| `model` | `"anthropic/claude-sonnet-4-5"` | `provider/model-id` for the analysis LLM. Must match a model you have an API key for in pi |
 | `lookbackDays` | `1` | How many days of session history to analyze |
 | `maxSessionBytes` | `614400` | Context budget for transcripts (~600KB). Sessions are prioritized by interaction density and trimmed to fit |
 | `backupDir` | `~/.pi/agent/reflect-backups` | Where pre-edit backups are stored |
@@ -76,7 +83,7 @@ The default. Scans `~/.pi/agent/sessions/` for JSONL session files from the look
 
 ### Custom command
 
-For non-pi transcripts (chat logs, other tools, custom databases), use the `command` source:
+For non-pi transcripts (chat logs, other agent tools, custom databases), use the `command` source:
 
 ```json
 {
@@ -197,6 +204,21 @@ Every run is logged to `~/.pi/agent/reflect-history.json` (last 100 runs). View 
   Strengthened "read before acting" rule, added "verify async completion" pattern...
 - 2026-02-12 08:00  AGENTS.md: 8 edits, 31 corrections (42 sessions)
   Added "don't ask permission for debugging" and "corrections are permanent" rules...
+```
+
+## Development
+
+```bash
+git clone https://github.com/skyfallsin/pi-reflect
+cd pi-reflect
+npm install
+npm test   # 137 tests
+```
+
+To test the extension locally without installing:
+
+```bash
+pi -e ./extensions/index.ts
 ```
 
 ## License
