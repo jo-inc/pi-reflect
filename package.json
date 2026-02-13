@@ -18,6 +18,9 @@
     "url": "https://github.com/skyfallsin/pi-reflect"
   },
   "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
   "pi": {
     "extensions": [
       "./extensions/index.ts"
@@ -26,5 +29,9 @@
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
   }
 }
