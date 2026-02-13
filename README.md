@@ -57,7 +57,7 @@ Set `transcriptSource` to `{ "type": "command", "command": "your-script {lookbac
 pi -p --no-session "/reflect /path/to/AGENTS.md"
 ```
 
-Works with cron, launchd, or any scheduler.
+Works with cron, launchd, or any scheduler. Ask your pi to set it up for you.
 
 ## Development
 
