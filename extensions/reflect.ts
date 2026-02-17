@@ -33,6 +33,9 @@ export interface ReflectTarget {
 	maxSessionBytes: number;
 	backupDir: string;
 	transcriptSource: TranscriptSource;
+	/** Custom prompt template. Use {fileName}, {targetContent}, {transcripts} as placeholders.
+	 *  If omitted, uses the default correction-pattern prompt. */
+	prompt?: string;
 }
 
 export interface ReflectConfig {
@@ -540,6 +543,18 @@ CRITICAL: Never duplicate content. new_text should EXTEND or REPLACE old_text, n
 }`;
 }
 
+/** Build the prompt for a target. If target has a custom prompt, interpolate it. Otherwise use default. */
+export function buildPromptForTarget(target: ReflectTarget, targetPath: string, targetContent: string, transcripts: string): string {
+	if (!target.prompt) {
+		return buildReflectionPrompt(targetPath, targetContent, transcripts);
+	}
+	const fileName = path.basename(targetPath);
+	return target.prompt
+		.replace(/\{fileName\}/g, fileName)
+		.replace(/\{targetContent\}/g, targetContent)
+		.replace(/\{transcripts\}/g, transcripts);
+}
+
 // --- Edit application ---
 
 export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
@@ -681,7 +696,7 @@ export async function runReflection(
 
 	// Build prompt and call LLM
 	notify(`Analyzing with ${target.model}...`, "info");
-	const prompt = buildReflectionPrompt(targetPath, targetContent, transcripts);
+	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts);
 
 	const completeFn = deps?.completeSimple ?? (await import("@mariozechner/pi-ai")).completeSimple;
 	const response = await completeFn(model, {
@@ -809,18 +824,14 @@ export async function runReflection(
 	const summary = analysis.summary ?? `${applied} edits applied from ${includedCount} sessions.`;
 	notify(summary, "info");
 
-	// If target is a symlink into a git repo, commit the change
+	// If target is in a git repo, commit the change
 	try {
 		const realPath = fs.realpathSync(targetPath);
 		const repoDir = path.dirname(realPath);
 		if (fs.existsSync(path.join(repoDir, ".git"))) {
-			const { execSync } = require("node:child_process");
-			const fileName = path.basename(realPath);
-			execSync(`git add "${fileName}" && git commit -m "reflect: ${sourceDateStr} — ${applied} edits from ${includedCount} sessions" --no-verify`, {
-				cwd: repoDir,
-				encoding: "utf-8",
-				timeout: 10_000,
-			});
+			const { execFileSync } = require("node:child_process");
+			execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
+			execFileSync("git", ["commit", "-m", `reflect: ${path.basename(realPath)} — ${applied} edits from ${includedCount} sessions`, "--no-verify"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
 			notify(`Committed to ${path.basename(repoDir)}`, "info");
 		}
 	} catch {
