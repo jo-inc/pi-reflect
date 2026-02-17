@@ -39,7 +39,27 @@ First run asks if you want to save the target. After that, just `/reflect`.
 1. Extracts recent pi session transcripts (default: last 24 hours)
 2. Sends them + your target file to an LLM to find correction patterns — redirections, frustration, repeated explanations
 3. Applies surgical edits: strengthens violated rules, adds new rules for recurring patterns (2+ occurrences only)
-4. Backs up the original before any changes. Skips ambiguous matches, duplicates, and suspiciously large deletions. Auto-commits if the target is symlinked into a git repo.
+4. Backs up the original before any changes. Skips ambiguous matches, duplicates, and suspiciously large deletions. Auto-commits if the target is in a git repo.
+
+## Custom Prompts
+
+Each target can have a custom `prompt` field in `reflect.json` with placeholders:
+
+- `{fileName}` — name of the target file
+- `{targetContent}` — current file contents
+- `{transcripts}` — recent conversation transcripts
+
+This enables different reflection strategies per file — memory curation for `MEMORY.md`, identity evolution for `SOUL.md`, behavioral correction for `AGENTS.md`. If no custom prompt is set, the default correction-pattern prompt is used.
+
+```json
+{
+  "targets": [{
+    "path": "/data/me/SOUL.md",
+    "model": "anthropic/claude-sonnet-4-5",
+    "prompt": "You are reviewing conversations to evolve an AI identity file ({fileName})...\n\n{targetContent}\n\n{transcripts}"
+  }]
+}
+```
 
 ## Impact Metrics
 
@@ -71,6 +91,10 @@ Both metrics are grouped by target file.
 ```
 
 Set `transcriptSource` to `{ "type": "command", "command": "your-script {lookbackDays}" }` for non-pi transcripts.
+
+## Related
+
+- **[pi-mem](https://github.com/skyfallsin/pi-mem)** — Memory system for pi agents. Manages MEMORY.md, daily logs, notes, and scratchpad with context injection and keyword search. Pairs naturally with pi-reflect.
 
 ## Scheduling
 
