@@ -25,6 +25,20 @@ export interface TranscriptSource {
 	command?: string;
 }
 
+export interface ContextSource {
+	type: "files" | "command" | "url";
+	/** Label shown in the context block (e.g. "daily logs", "recent conversations") */
+	label?: string;
+	/** For "files": glob patterns or file paths. */
+	paths?: string[];
+	/** For "command": shell command. `{lookbackDays}` is interpolated. */
+	command?: string;
+	/** For "url": HTTP GET endpoint. `{lookbackDays}` is interpolated. */
+	url?: string;
+	/** Max bytes to read from this source (default: 100KB) */
+	maxBytes?: number;
+}
+
 export interface ReflectTarget {
 	path: string;
 	schedule: "daily" | "manual";
@@ -33,9 +47,12 @@ export interface ReflectTarget {
 	maxSessionBytes: number;
 	backupDir: string;
 	transcriptSource: TranscriptSource;
-	/** Custom prompt template. Use {fileName}, {targetContent}, {transcripts} as placeholders.
+	/** Custom prompt template. Use {fileName}, {targetContent}, {transcripts}, {context} as placeholders.
 	 *  If omitted, uses the default correction-pattern prompt. */
 	prompt?: string;
+	/** Additional context sources to read and inject. Available via {context} placeholder in prompts.
+	 *  Each source has a type: "files" (glob/paths), "command" (shell, stdout), or "url" (HTTP GET). */
+	context?: ContextSource[];
 }
 
 export interface ReflectConfig {
@@ -447,6 +464,96 @@ export async function collectTranscriptsFromCommand(command: string, lookbackDay
 	}
 }
 
+// --- Context collection ---
+
+/** Compute the cutoff date string (YYYY-MM-DD) for lookbackDays ago */
+function lookbackCutoff(lookbackDays: number): string {
+	const d = new Date();
+	d.setDate(d.getDate() - lookbackDays);
+	return d.toISOString().slice(0, 10);
+}
+
+/** Check if a filename contains a date and whether it's within the lookback window */
+function isWithinLookback(filename: string, cutoff: string): boolean {
+	const match = filename.match(/(\d{4}-\d{2}-\d{2})/);
+	if (!match) return true; // no date in filename → include it
+	return match[1] >= cutoff;
+}
+
+export async function collectContext(sources: ContextSource[], lookbackDays: number): Promise<string> {
+	const parts: string[] = [];
+	const cutoff = lookbackCutoff(lookbackDays);
+
+	for (const source of sources) {
+		const maxBytes = source.maxBytes ?? 100 * 1024;
+		const label = source.label ?? source.type;
+		let content = "";
+		let totalBytes = 0;
+
+		try {
+			if (source.type === "files" && source.paths) {
+				const fileParts: string[] = [];
+				for (const pattern of source.paths) {
+					const expanded = pattern.replace(/\{lookbackDays\}/g, String(lookbackDays));
+					let candidates: { name: string; full: string }[] = [];
+
+					if (expanded.includes("*")) {
+						const dir = path.dirname(expanded);
+						const filePattern = path.basename(expanded);
+						const regex = new RegExp("^" + filePattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+						try {
+							candidates = fs.readdirSync(dir)
+								.filter(f => regex.test(f))
+								.map(f => ({ name: f, full: path.join(dir, f) }));
+						} catch {}
+					} else if (fs.existsSync(expanded)) {
+						candidates = [{ name: path.basename(expanded), full: expanded }];
+					}
+
+					// Prune by date, sort newest first
+					candidates = candidates
+						.filter(c => isWithinLookback(c.name, cutoff))
+						.sort((a, b) => b.name.localeCompare(a.name));
+
+					for (const c of candidates) {
+						try {
+							if (!fs.statSync(c.full).isFile()) continue;
+							const fileContent = fs.readFileSync(c.full, "utf-8");
+							if (totalBytes + fileContent.length > maxBytes) break;
+							fileParts.push(`### ${c.name}\n${fileContent}`);
+							totalBytes += fileContent.length;
+						} catch {}
+					}
+				}
+				content = fileParts.join("\n\n");
+			} else if (source.type === "command" && source.command) {
+				const { execSync } = await import("node:child_process");
+				const interpolated = source.command.replace(/\{lookbackDays\}/g, String(lookbackDays));
+				content = execSync(interpolated, {
+					encoding: "utf-8",
+					timeout: 30_000,
+					maxBuffer: maxBytes * 2,
+				});
+			} else if (source.type === "url" && source.url) {
+				const interpolated = source.url.replace(/\{lookbackDays\}/g, String(lookbackDays));
+				const response = await fetch(interpolated, { signal: AbortSignal.timeout(15_000) });
+				if (response.ok) {
+					content = await response.text();
+				}
+			}
+		} catch {}
+
+		if (content) {
+			if (content.length > maxBytes) {
+				content = content.slice(0, maxBytes) + "\n\n[...truncated to fit context budget]";
+			}
+			parts.push(`## ${label}\n${content}`);
+		}
+	}
+
+	return parts.join("\n\n---\n\n");
+}
+
 // --- Scan available session dates ---
 
 export function getAvailableSessionDates(): string[] {
@@ -544,7 +651,7 @@ CRITICAL: Never duplicate content. new_text should EXTEND or REPLACE old_text, n
 }
 
 /** Build the prompt for a target. If target has a custom prompt, interpolate it. Otherwise use default. */
-export function buildPromptForTarget(target: ReflectTarget, targetPath: string, targetContent: string, transcripts: string): string {
+export function buildPromptForTarget(target: ReflectTarget, targetPath: string, targetContent: string, transcripts: string, context?: string): string {
 	if (!target.prompt) {
 		return buildReflectionPrompt(targetPath, targetContent, transcripts);
 	}
@@ -552,7 +659,8 @@ export function buildPromptForTarget(target: ReflectTarget, targetPath: string, 
 	return target.prompt
 		.replace(/\{fileName\}/g, fileName)
 		.replace(/\{targetContent\}/g, targetContent)
-		.replace(/\{transcripts\}/g, transcripts);
+		.replace(/\{transcripts\}/g, transcripts)
+		.replace(/\{context\}/g, context ?? "");
 }
 
 // --- Edit application ---
@@ -694,9 +802,19 @@ export async function runReflection(
 		return null;
 	}
 
+	// Collect additional context
+	let context = "";
+	if (target.context && target.context.length > 0) {
+		notify(`Collecting context from ${target.context.length} source(s)...`, "info");
+		context = await collectContext(target.context, target.lookbackDays);
+		if (context) {
+			notify(`Collected ${(context.length / 1024).toFixed(0)}KB of additional context`, "info");
+		}
+	}
+
 	// Build prompt and call LLM
 	notify(`Analyzing with ${target.model}...`, "info");
-	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts);
+	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts, context);
 
 	const completeFn = deps?.completeSimple ?? (await import("@mariozechner/pi-ai")).completeSimple;
 	const response = await completeFn(model, {
