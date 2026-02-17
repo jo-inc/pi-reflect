@@ -7,11 +7,13 @@
 
 # pi-reflect
 
-Self-improving behavioral files for [pi](https://github.com/badlogic/pi-mono) coding agents.
+Iterative self-improvement for [pi](https://github.com/badlogic/pi-mono) coding agents.
 
-You correct your agent. Reflect reads those corrections from your session transcripts and surgically edits your `AGENTS.md` (or any markdown file) so the agent stops repeating the same mistakes.
+Define a target — how your agent should behave, what it should remember, who it should be — and reflect iterates toward it. Each run reads recent conversation transcripts, compares the agent's actual behavior against the target, and makes surgical edits to close the gap.
 
-**you correct the agent → reflect strengthens the rules → the agent stops making that mistake.**
+**define the target → reflect reads conversations → edits the file → the agent gets closer.**
+
+Works on any markdown file: behavioral rules (`AGENTS.md`), long-term memory (`MEMORY.md`), personality (`SOUL.md`), or anything else.
 
 ## Install
 
@@ -34,48 +36,52 @@ Requires pi with an LLM API key configured. Each run makes one LLM call (~$0.05�
 
 First run asks if you want to save the target. After that, just `/reflect`.
 
-## What it does
+## How it works
 
-1. Extracts recent pi session transcripts (default: last 24 hours)
-2. Sends them + your target file to an LLM to find correction patterns — redirections, frustration, repeated explanations
-3. Applies surgical edits: strengthens violated rules, adds new rules for recurring patterns (2+ occurrences only)
-4. Backs up the original before any changes. Skips ambiguous matches, duplicates, and suspiciously large deletions. Auto-commits if the target is in a git repo.
+1. Reads recent conversation transcripts (default: last 24 hours)
+2. Sends them + the target file + a prompt describing the desired end state to an LLM
+3. The LLM identifies gaps between actual behavior and the target, proposes surgical edits
+4. Edits are applied with safety checks: backs up the original, skips ambiguous matches, rejects suspiciously large deletions, auto-commits to git
 
-## Custom Prompts
+Over time, the file converges: corrections get absorbed as rules, memory accumulates durable facts, personality sharpens from generic to specific. The agent stops needing the same corrections.
 
-Each target can have a custom `prompt` field in `reflect.json` with placeholders:
+## Prompts define the target
 
-- `{fileName}` — name of the target file
-- `{targetContent}` — current file contents
-- `{transcripts}` — recent conversation transcripts
+Each target has an optional `prompt` field that tells reflect *what to optimize for*. The same engine drives very different behaviors depending on the prompt:
 
-This enables different reflection strategies per file — memory curation for `MEMORY.md`, identity evolution for `SOUL.md`, behavioral correction for `AGENTS.md`. If no custom prompt is set, the default correction-pattern prompt is used.
+| Target | Prompt goal | What reflect does |
+|--------|------------|-------------------|
+| `AGENTS.md` | Behavioral correctness | Strengthens violated rules, adds rules for recurring patterns |
+| `MEMORY.md` | Factual completeness | Extracts durable facts from conversations, removes stale entries |
+| `SOUL.md` | Identity convergence | Sharpens personality from generic to specific based on interaction patterns |
+
+Prompts use `{fileName}`, `{targetContent}`, and `{transcripts}` placeholders:
 
 ```json
 {
   "targets": [{
     "path": "/data/me/SOUL.md",
     "model": "anthropic/claude-sonnet-4-5",
-    "prompt": "You are reviewing conversations to evolve an AI identity file ({fileName})...\n\n{targetContent}\n\n{transcripts}"
+    "prompt": "You are evolving an AI identity file ({fileName}). Read the conversations and sharpen the personality — make it more specific, more opinionated, less generic. Remove platitudes. Add concrete preferences and patterns you observe.\n\n## Current identity\n{targetContent}\n\n## Recent conversations\n{transcripts}"
   }]
 }
 ```
 
+If no prompt is set, the default targets behavioral corrections (the original use case).
+
 ## Impact Metrics
 
-`/reflect-stats` tracks two signals to measure whether reflection is working:
+`/reflect-stats` tracks whether reflection is working:
 
-- **Correction Rate** — `corrections / sessions` per run, plotted over time. Trending down = the agent is making fewer mistakes. Each data point uses the **source date** (when the sessions happened), not when reflect ran.
+- **Correction Rate** — `corrections / sessions` per run, plotted over time. Trending down = the agent is converging.
 
-- **Rule Recidivism** — which sections get edited repeatedly. A rule strengthened 3+ times means it isn't sticking. Sections edited once and never again are "resolved."
+- **Rule Recidivism** — which sections get edited repeatedly. A rule strengthened 3+ times isn't sticking. Sections edited once and never again are resolved.
 
-Both metrics are grouped by target file.
-
-`/reflect-backfill` bootstraps stats by analyzing all historical session dates in dry-run mode (no file edits). Shows estimated cost and asks for confirmation before running.
+`/reflect-backfill` bootstraps stats from historical sessions (dry-run, no file edits).
 
 ## Configuration
 
-`~/.pi/agent/reflect.json` — created automatically or edit manually:
+`~/.pi/agent/reflect.json`:
 
 ```json
 {
