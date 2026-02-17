@@ -41,7 +41,9 @@ First run asks if you want to save the target. After that, just `/reflect`.
 1. Reads recent conversation transcripts (default: last 24 hours)
 2. Sends them + the target file + a prompt describing the desired end state to an LLM
 3. The LLM identifies gaps between actual behavior and the target, proposes surgical edits
-4. Edits are applied with safety checks: backs up the original, skips ambiguous matches, rejects suspiciously large deletions, auto-commits to git
+4. Edits are applied with safety checks: backs up the original, skips ambiguous matches, rejects suspiciously large deletions, auto-commits to git if the target is in a repo
+
+Every edit is versioned — reflect auto-commits to git after applying changes, so you get a full history of how each file evolved. `git log AGENTS.md` shows every correction the agent absorbed. `git diff HEAD~5 SOUL.md` shows how the personality sharpened over the last 5 runs.
 
 Over time, the file converges: corrections get absorbed as rules, memory accumulates durable facts, personality sharpens from generic to specific. The agent stops needing the same corrections.
 
