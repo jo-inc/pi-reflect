@@ -46,7 +46,10 @@ export interface ReflectTarget {
 	lookbackDays: number;
 	maxSessionBytes: number;
 	backupDir: string;
-	transcriptSource: TranscriptSource;
+	/** Transcript sources. Can be a single TranscriptSource (legacy) or array of ContextSource[].
+	 *  Multiple sources are concatenated with --- separators. */
+	transcriptSource?: TranscriptSource;
+	transcripts?: ContextSource[];
 	/** Custom prompt template. Use {fileName}, {targetContent}, {transcripts}, {context} as placeholders.
 	 *  If omitted, uses the default correction-pattern prompt. */
 	prompt?: string;
@@ -752,29 +755,39 @@ export async function runReflection(
 		return null;
 	}
 
-	// Collect transcripts
-	let transcriptResult: TranscriptResult;
+	// Collect transcripts — supports new `transcripts` array (ContextSource[]) or legacy `transcriptSource`
+	let transcripts: string;
+	let sessionCount = 0;
+	let includedCount = 0;
 
 	if (options?.transcriptsOverride) {
-		transcriptResult = options.transcriptsOverride;
-	} else if (target.transcriptSource.type === "command" && target.transcriptSource.command) {
+		({ transcripts, sessionCount, includedCount } = options.transcriptsOverride);
+	} else if (target.transcripts && target.transcripts.length > 0) {
+		// New array-based transcript sources
+		notify(`Extracting transcripts from ${target.transcripts.length} source(s) (last ${target.lookbackDays} day(s))...`, "info");
+		transcripts = await collectContext(target.transcripts, target.lookbackDays);
+		// Estimate session count from section headers
+		const headerMatches = transcripts.match(/^###\s/gm);
+		sessionCount = headerMatches?.length ?? 1;
+		includedCount = sessionCount;
+	} else if (target.transcriptSource?.type === "command" && target.transcriptSource.command) {
 		notify(`Extracting transcripts (last ${target.lookbackDays} day(s))...`, "info");
 		const fn = deps?.collectTranscriptsFromCommandFn ?? collectTranscriptsFromCommand;
-		transcriptResult = await fn(
+		const result = await fn(
 			target.transcriptSource.command,
 			target.lookbackDays,
 			target.maxSessionBytes,
 		);
+		({ transcripts, sessionCount, includedCount } = result);
 	} else {
 		notify(`Extracting transcripts (last ${target.lookbackDays} day(s))...`, "info");
 		const fn = deps?.collectTranscriptsFn ?? collectTranscripts;
-		transcriptResult = await fn(
+		const result = await fn(
 			target.lookbackDays,
 			target.maxSessionBytes,
 		);
+		({ transcripts, sessionCount, includedCount } = result);
 	}
-
-	const { transcripts, sessionCount, includedCount } = transcriptResult;
 
 	if (!transcripts || includedCount === 0) {
 		notify(`No substantive sessions found (${sessionCount} scanned). Nothing to reflect on.`, "info");
