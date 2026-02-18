@@ -7,7 +7,7 @@ This guide is for you, the coding agent. When a user asks you to "set up reflect
 Run this command:
 
 ```bash
-pi install git:github.com/skyfallsin/pi-reflect
+pi install git:github.com/jo-inc/pi-reflect
 ```
 
 Then reload extensions:

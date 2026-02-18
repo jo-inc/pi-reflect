@@ -18,7 +18,7 @@ Works on any markdown file: behavioral rules (`AGENTS.md`), long-term memory (`M
 ## Install
 
 ```bash
-pi install git:github.com/skyfallsin/pi-reflect
+pi install git:github.com/jo-inc/pi-reflect
 ```
 
 Requires pi with an LLM API key configured. Each run makes one LLM call (~$0.05–0.15 with Sonnet).
@@ -144,7 +144,7 @@ If no prompt is set, the default targets behavioral corrections (the original us
 
 ## Related
 
-- **[pi-mem](https://github.com/skyfallsin/pi-mem)** — Memory system for pi agents. Manages MEMORY.md, daily logs, notes, and scratchpad with context injection and keyword search. Pairs naturally with pi-reflect.
+- **[pi-mem](https://github.com/jo-inc/pi-mem)** — Memory system for pi agents. Manages MEMORY.md, daily logs, notes, and scratchpad with context injection and keyword search. Pairs naturally with pi-reflect.
 
 ## Scheduling
 
@@ -157,7 +157,7 @@ Works with cron, launchd, or any scheduler. Ask your pi to set it up for you —
 ## Development
 
 ```bash
-git clone https://github.com/skyfallsin/pi-reflect && cd pi-reflect
+git clone https://github.com/jo-inc/pi-reflect && cd pi-reflect
 npm install && npm test   # 137 tests
 pi -e ./extensions/index.ts   # test locally without installing
 ```
