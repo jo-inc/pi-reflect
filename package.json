@@ -4,6 +4,7 @@
   "description": "Self-improving behavioral files for pi coding agents. Analyzes session transcripts for correction patterns and makes surgical edits to prevent recurrence.",
   "keywords": [
     "pi-package",
+    "pi-extension",
     "pi",
     "coding-agent",
     "self-improvement",
@@ -17,6 +18,10 @@
     "type": "git",
     "url": "https://github.com/jo-inc/pi-reflect.git"
   },
+  "bugs": {
+    "url": "https://github.com/jo-inc/pi-reflect/issues"
+  },
+  "homepage": "https://github.com/jo-inc/pi-reflect#readme",
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts"
@@ -24,7 +29,11 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/jo-inc/pi-reflect/main/logo.png"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
