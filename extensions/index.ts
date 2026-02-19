@@ -82,8 +82,10 @@ export default function (pi: ExtensionAPI) {
 						"Which target?",
 						config.targets.map((t) => path.basename(t.path)),
 					);
-					if (choice === undefined) return;
-					target = config.targets[choice];
+					if (choice === undefined || choice === null) return;
+					const chosenTarget = config.targets.find((t) => path.basename(t.path) === choice);
+					if (!chosenTarget) return;
+					target = chosenTarget;
 				} else {
 					target = config.targets[0];
 				}
@@ -93,7 +95,21 @@ export default function (pi: ExtensionAPI) {
 				? (msg, level) => ctx.ui.notify(msg, level)
 				: (msg, level) => console.log(`[reflect] [${level}] ${msg}`);
 
-			const run = await runReflection(target, modelRegistryRef, notify);
+			// Use the current session model if available
+			let currentModel: any;
+			let currentModelApiKey: string | undefined;
+			if (ctx.model) {
+				const key = await ctx.modelRegistry.getApiKey(ctx.model);
+				if (key) {
+					currentModel = ctx.model;
+					currentModelApiKey = key;
+				}
+			}
+
+			const run = await runReflection(target, modelRegistryRef, notify, undefined, {
+				currentModel,
+				currentModelApiKey,
+			});
 
 			if (run) {
 				const history = loadHistory();

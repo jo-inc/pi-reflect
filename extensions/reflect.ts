@@ -122,6 +122,9 @@ export interface ReflectionOptions {
 	sourceDateOverride?: string;
 	transcriptsOverride?: TranscriptResult;
 	dryRun?: boolean;
+	/** Override model — use the current session model instead of target.model */
+	currentModel?: any;
+	currentModelApiKey?: string;
 }
 
 export type NotifyFn = (msg: string, level: "info" | "warning" | "error") => void;
@@ -796,23 +799,34 @@ export async function runReflection(
 
 	notify(`Extracted ${includedCount} sessions (${sessionCount} scanned, ${(transcripts.length / 1024).toFixed(0)}KB)`, "info");
 
-	// Resolve model
-	const getModelFn = deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
-	const [provider, modelId] = target.model.split("/", 2);
-	let model = getModelFn(provider as any, modelId as any);
+	// Resolve model — prefer current session model over target.model config
+	let model: any;
+	let apiKey: string | undefined;
+	let modelLabel: string;
 
-	if (!model) {
-		model = modelRegistry?.find(provider, modelId);
-	}
-	if (!model) {
-		notify(`Model not found: ${target.model}`, "error");
-		return null;
-	}
+	if (options?.currentModel && options?.currentModelApiKey) {
+		model = options.currentModel;
+		apiKey = options.currentModelApiKey;
+		modelLabel = `${model.provider}/${model.id}`;
+	} else {
+		const getModelFn = deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
+		const [provider, modelId] = target.model.split("/", 2);
+		model = getModelFn(provider as any, modelId as any);
 
-	const apiKey = await modelRegistry?.getApiKey(model);
-	if (!apiKey) {
-		notify(`No API key for model: ${target.model}`, "error");
-		return null;
+		if (!model) {
+			model = modelRegistry?.find(provider, modelId);
+		}
+		if (!model) {
+			notify(`Model not found: ${target.model}`, "error");
+			return null;
+		}
+
+		apiKey = await modelRegistry?.getApiKey(model);
+		if (!apiKey) {
+			notify(`No API key for model: ${target.model}`, "error");
+			return null;
+		}
+		modelLabel = target.model;
 	}
 
 	// Collect additional context
@@ -826,7 +840,7 @@ export async function runReflection(
 	}
 
 	// Build prompt and call LLM
-	notify(`Analyzing with ${target.model}...`, "info");
+	notify(`Analyzing with ${modelLabel}...`, "info");
 	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts, context);
 
 	const completeFn = deps?.completeSimple ?? (await import("@mariozechner/pi-ai")).completeSimple;
