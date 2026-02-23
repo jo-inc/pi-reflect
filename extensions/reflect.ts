@@ -801,9 +801,9 @@ async function analyzeTranscriptBatch(
 						properties: {
 							type: { type: "string", enum: ["strengthen", "add"], description: "strengthen = update existing text, add = insert new text" },
 							section: { type: "string", description: "Which section of the file" },
-							old_text: { type: ["string", "null"], description: "Exact text to find (for strengthen) or null (for add)" },
+							old_text: { type: "string", description: "Exact text to find (for strengthen) or null (for add)" },
 							new_text: { type: "string", description: "Replacement text (for strengthen) or new text to insert (for add)" },
-							after_text: { type: ["string", "null"], description: "Text after which to insert (for add) or null (for strengthen)" },
+							after_text: { type: "string", description: "Text after which to insert (for add) or null (for strengthen)" },
 							reason: { type: "string", description: "What fact/rule this captures and where in the conversations it appeared" },
 						},
 						required: ["type", "new_text"],
