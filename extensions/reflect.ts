@@ -63,7 +63,7 @@ export interface ReflectConfig {
 }
 
 export interface EditRecord {
-	type: "strengthen" | "add";
+	type: "strengthen" | "add" | "remove" | "merge";
 	section: string;
 	reason: string;
 }
@@ -80,6 +80,8 @@ export interface ReflectRun {
 	edits?: EditRecord[];
 	sourceDate?: string;
 	date?: string; // legacy field from bash-script/batch runs
+	/** File size metrics after this run */
+	fileSize?: { chars: number; words: number; lines: number; estTokens: number };
 }
 
 export interface SessionExchange {
@@ -112,11 +114,13 @@ export interface EditResult {
 }
 
 export interface AnalysisEdit {
-	type: "strengthen" | "add";
+	type: "strengthen" | "add" | "remove" | "merge";
 	section?: string;
 	old_text?: string | null;
 	new_text: string;
 	after_text?: string | null;
+	/** For "merge": array of exact text strings to remove (they're consolidated into new_text) */
+	merge_sources?: string[];
 	reason?: string;
 }
 
@@ -145,6 +149,17 @@ export const DEFAULT_TARGET: ReflectTarget = {
 
 export const MAX_ASSISTANT_MSG_CHARS = 2000;
 export const MAX_THINKING_MSG_CHARS = 1500;
+
+// --- File size metrics ---
+
+export function computeFileMetrics(content: string): { chars: number; words: number; lines: number; estTokens: number } {
+	const chars = content.length;
+	const words = content.split(/\s+/).filter(Boolean).length;
+	const lines = content.split("\n").length;
+	// Rough estimate: ~4 chars per token for English/code mix
+	const estTokens = Math.round(chars / 4);
+	return { chars, words, lines, estTokens };
+}
 
 // --- Config ---
 
@@ -588,7 +603,19 @@ export function getAvailableSessionDates(): string[] {
 
 export function buildReflectionPrompt(targetPath: string, targetContent: string, transcripts: string): string {
 	const fileName = path.basename(targetPath);
+	const charCount = targetContent.length;
+	const lineCount = targetContent.split("\n").length;
 	return `You are reviewing recent agent session transcripts to improve ${fileName}.
+
+## CRITICAL: Conciseness
+
+The target file is ${lineCount} lines / ${charCount} chars. Your #1 job is to keep it CONCISE.
+- Every rule should be 1-2 sentences max. If a rule is longer, condense it.
+- Remove session counts, escalating repetition tallies, and "this happened N times" histories — the rule itself is what matters, not how many times it was violated.
+- Remove verbose examples when the rule is self-explanatory.
+- Merge rules that say the same thing in different words.
+- Remove rules that are subsumed by other, better-worded rules.
+- A good rule file is SHORT and scannable. Walls of text get ignored by agents.
 
 ## Input
 
@@ -604,58 +631,52 @@ ${transcripts}
 
 ## Step 1: Identify Correction Patterns
 
-Read through all the transcripts carefully. Look for:
-- User redirecting the agent ("no", "not that", "I said...", "wrong", "actually...")
-- User expressing frustration ("bro", "wtf", "seriously", "come on", "sigh")
-- User having to repeat themselves or re-explain
-- User asking the agent to undo or revert something
-- User telling the agent to simplify or stop over-engineering
-- User correcting the agent's approach or understanding
-- Agent thinking that reveals a misunderstanding that the user then corrects
+Read the transcripts for genuine corrections — user redirecting the agent, expressing frustration, repeating themselves, or correcting approach. Ignore normal flow ("no worries", "actually that looks good").
 
-For each real correction, note: what the agent did wrong, what the user wanted, and which rule in ${fileName} (if any) already covers this.
+For each correction: what the agent did wrong, what the user wanted, and which rule (if any) already covers it.
 
-Ignore normal conversation flow — "no" in "no worries" or "actually, that looks good" are NOT corrections. Focus on genuine friction where the agent's behavior wasted the user's time.
+## Step 2: Propose Edits (prioritize conciseness)
 
-## Step 2: Propose Edits
+Four edit types available:
+1. **strengthen**: Tighten an existing rule's wording (make it clearer/shorter, not longer).
+2. **add**: Add a new rule for a pattern with 2+ occurrences. Keep it to 1-2 sentences.
+3. **remove**: Delete a rule that is redundant (covered by another rule), obsolete, or overly verbose noise.
+4. **merge**: Consolidate 2+ rules that overlap into one concise rule.
 
-Based on the patterns you found:
-- Only propose edits that address ACTUAL patterns in the transcripts. Don't invent hypothetical rules.
-- If an existing rule already covers the pattern but the agent still violated it, STRENGTHEN the wording (make it more prominent, add emphasis, add a concrete example).
-- If a correction pattern has no matching rule, propose a new bullet in the most appropriate existing section.
-- Do NOT reorganize, rewrite, or restructure the file. Propose minimal, targeted edits.
-- Do NOT remove any existing rules.
-- Do NOT add rules for one-off situations. Only add rules for patterns (2+ occurrences across different sessions).
-- Keep the same tone and style as the existing file.
+Guidelines:
+- Prefer strengthen/merge/remove over add. The file should get SHORTER or stay the same size, not grow.
+- When strengthening, make the rule SHORTER and CLEARER — don't add history or examples unless essential.
+- Strip "This happened in N sessions", "RECURRING", session dates, escalating violation counts. The rule text is enough.
+- Don't reorganize or restructure the file. Minimal, targeted edits only.
+- Don't add one-off rules. Only patterns with 2+ occurrences.
 
 ## Step 3: Output
 
-IMPORTANT: Your ENTIRE response must be a single JSON object. No markdown, no explanation, no preamble. Start with { and end with }.
+IMPORTANT: Your ENTIRE response must be a single JSON object. No markdown, no preamble.
 
-For "strengthen" edits: old_text must be a COMPLETE bullet point or rule from the file, copied character-for-character. new_text is the full replacement. Do NOT use partial strings — always include the complete line/bullet from "- **" to the end of the bullet point.
-For "add" edits: after_text must be a COMPLETE bullet point or line from the file, copied exactly. new_text is inserted on a new line after it. The new_text should be a complete new bullet point.
-CRITICAL: Never duplicate content. new_text should EXTEND or REPLACE old_text, not repeat it.
+For "strengthen": old_text = COMPLETE bullet/rule copied exactly. new_text = shorter/clearer replacement.
+For "add": after_text = COMPLETE bullet/line copied exactly. new_text = concise new bullet (1-2 sentences).
+For "remove": old_text = COMPLETE bullet/rule to delete. new_text = "" (empty string).
+For "merge": merge_sources = array of COMPLETE bullets to consolidate. new_text = single concise replacement. The merged text replaces the first source; others are removed.
 
 {
   "corrections_found": <number>,
   "sessions_with_corrections": <number>,
   "edits": [
     {
-      "type": "strengthen" | "add",
+      "type": "strengthen" | "add" | "remove" | "merge",
       "section": "which section of the file",
-      "old_text": "exact text to find (for strengthen) or null (for add)",
-      "new_text": "replacement text (for strengthen) or new text to insert (for add)",
-      "after_text": "text after which to insert (for add) or null (for strengthen)",
-      "reason": "why this edit is needed, with session evidence"
+      "old_text": "exact text to find (strengthen/remove) or null (add/merge)",
+      "new_text": "replacement/new text, or empty string for remove",
+      "after_text": "insertion point (add only) or null",
+      "merge_sources": ["exact text 1", "exact text 2"] or null (merge only),
+      "reason": "brief reason for this edit"
     }
   ],
   "patterns_not_added": [
-    {
-      "pattern": "description",
-      "reason": "why it wasn't added (one-off, already covered, etc.)"
-    }
+    { "pattern": "description", "reason": "why not added" }
   ],
-  "summary": "2-3 sentence summary of what was found and changed"
+  "summary": "2-3 sentence summary"
 }`;
 }
 
@@ -723,6 +744,56 @@ export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 			}
 
 			result = result.replace(edit.after_text, edit.after_text + "\n" + edit.new_text);
+			applied++;
+		} else if (edit.type === "remove" && edit.old_text) {
+			if (!result.includes(edit.old_text)) {
+				skipped.push(`Could not find text to remove: "${edit.old_text.slice(0, 80)}..."`);
+				continue;
+			}
+
+			const firstIdx = result.indexOf(edit.old_text);
+			const secondIdx = result.indexOf(edit.old_text, firstIdx + 1);
+			if (secondIdx !== -1) {
+				skipped.push(`Ambiguous match for removal (appears multiple times): "${edit.old_text.slice(0, 80)}..."`);
+				continue;
+			}
+
+			// Remove the text and any trailing blank line
+			result = result.replace(edit.old_text + "\n", "");
+			if (result.includes(edit.old_text)) {
+				result = result.replace(edit.old_text, "");
+			}
+			applied++;
+		} else if (edit.type === "merge" && edit.merge_sources && edit.merge_sources.length > 0 && edit.new_text) {
+			// Remove all source texts, then insert the consolidated new_text where the first source was
+			let firstSourceIdx = Infinity;
+			let firstSourceText = "";
+			let allFound = true;
+
+			for (const src of edit.merge_sources) {
+				if (!result.includes(src)) {
+					skipped.push(`Merge source not found: "${src.slice(0, 80)}..."`);
+					allFound = false;
+					break;
+				}
+				const idx = result.indexOf(src);
+				if (idx < firstSourceIdx) {
+					firstSourceIdx = idx;
+					firstSourceText = src;
+				}
+			}
+			if (!allFound) continue;
+
+			// Replace the first source with the merged text
+			result = result.replace(firstSourceText, edit.new_text);
+			// Remove the remaining sources
+			for (const src of edit.merge_sources) {
+				if (src === firstSourceText) continue;
+				result = result.replace(src + "\n", "");
+				if (result.includes(src)) {
+					result = result.replace(src, "");
+				}
+			}
 			applied++;
 		} else {
 			skipped.push(`Invalid edit: ${JSON.stringify(edit).slice(0, 100)}`);
@@ -799,12 +870,13 @@ async function analyzeTranscriptBatch(
 					items: {
 						type: "object",
 						properties: {
-							type: { type: "string", enum: ["strengthen", "add"], description: "strengthen = update existing text, add = insert new text" },
+							type: { type: "string", enum: ["strengthen", "add", "remove", "merge"], description: "strengthen = update existing text, add = insert new text, remove = delete redundant text, merge = consolidate multiple rules into one" },
 							section: { type: "string", description: "Which section of the file" },
 							old_text: { type: ["string", "null"], description: "Exact text to find (for strengthen) or null (for add)" },
 							new_text: { type: "string", description: "Replacement text (for strengthen) or new text to insert (for add)" },
-							after_text: { type: ["string", "null"], description: "Text after which to insert (for add) or null (for strengthen)" },
-							reason: { type: "string", description: "What fact/rule this captures and where in the conversations it appeared" },
+							after_text: { type: ["string", "null"], description: "Text after which to insert (for add) or null" },
+							merge_sources: { type: ["array", "null"], items: { type: "string" }, description: "For merge: array of exact text strings to consolidate" },
+							reason: { type: "string", description: "Brief reason for this edit" },
 						},
 						required: ["type", "new_text"],
 					},
@@ -826,7 +898,7 @@ async function analyzeTranscriptBatch(
 	};
 
 	const response = await completeFn(model, {
-		systemPrompt: "You are a behavioral analysis tool. Analyze the session transcripts and call the submit_analysis tool with your results. Always call the tool — never respond with plain text.",
+		systemPrompt: "You are a behavioral analysis tool that prioritizes CONCISENESS. Your goal is to keep the target file short and scannable — prefer merging, removing, and tightening rules over adding new ones. The file should get shorter or stay the same size, not grow. Analyze the session transcripts and call the submit_analysis tool with your results. Always call the tool — never respond with plain text.",
 		messages: [
 			{
 				role: "user" as const,
@@ -1078,6 +1150,7 @@ export async function runReflection(
 			correctionRate,
 			edits: [],
 			sourceDate: sourceDateStr,
+			fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
 		};
 	}
 
@@ -1104,6 +1177,7 @@ export async function runReflection(
 			correctionRate,
 			edits: editRecords,
 			sourceDate: sourceDateStr,
+			fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
 		};
 	}
 
@@ -1190,6 +1264,7 @@ export async function runReflection(
 		correctionRate,
 		edits: editRecords,
 		sourceDate: sourceDateStr,
+		fileSize: computeFileMetrics(fs.readFileSync(targetPath, "utf-8")),
 	};
 }
 

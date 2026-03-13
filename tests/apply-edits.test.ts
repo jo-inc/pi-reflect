@@ -345,4 +345,55 @@ describe("applyEdits", () => {
 		assert.ok(result.includes("Line one, improved."));
 		assert.ok(result.includes("Continuation line, also improved."));
 	});
+
+	it("removes a rule with type=remove", () => {
+		const content = "- Rule A\n- Rule B (redundant)\n- Rule C\n";
+		const { result, applied } = applyEdits(content, [
+			{ type: "remove", old_text: "- Rule B (redundant)", new_text: "" },
+		]);
+		assert.equal(applied, 1);
+		assert.ok(!result.includes("Rule B"));
+		assert.ok(result.includes("Rule A"));
+		assert.ok(result.includes("Rule C"));
+	});
+
+	it("skips remove when text not found", () => {
+		const content = "- Rule A\n- Rule B\n";
+		const { applied, skipped } = applyEdits(content, [
+			{ type: "remove", old_text: "- Rule X", new_text: "" },
+		]);
+		assert.equal(applied, 0);
+		assert.equal(skipped.length, 1);
+	});
+
+	it("merges multiple rules into one", () => {
+		const content = "- Always check schema before SQL.\n- Verify column names before queries.\n- Other rule.\n";
+		const { result, applied } = applyEdits(content, [
+			{
+				type: "merge",
+				merge_sources: [
+					"- Always check schema before SQL.",
+					"- Verify column names before queries.",
+				],
+				new_text: "- Always check DB schema before writing any SQL query.",
+			},
+		]);
+		assert.equal(applied, 1);
+		assert.ok(result.includes("- Always check DB schema before writing any SQL query."));
+		assert.ok(!result.includes("Verify column names"));
+		assert.ok(result.includes("Other rule"));
+	});
+
+	it("skips merge when a source is not found", () => {
+		const content = "- Rule A\n- Rule B\n";
+		const { applied, skipped } = applyEdits(content, [
+			{
+				type: "merge",
+				merge_sources: ["- Rule A", "- Rule X"],
+				new_text: "- Merged rule.",
+			},
+		]);
+		assert.equal(applied, 0);
+		assert.equal(skipped.length, 1);
+	});
 });

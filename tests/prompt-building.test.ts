@@ -27,25 +27,18 @@ describe("buildReflectionPrompt", () => {
 	it("instructs JSON-only output", () => {
 		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
 		assert.ok(prompt.includes("single JSON object"));
-		assert.ok(prompt.includes("No markdown, no explanation, no preamble"));
+		assert.ok(prompt.includes("No markdown, no preamble"));
 	});
 
-	it("describes the strengthen edit type", () => {
+	it("describes all edit types", () => {
 		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
 		assert.ok(prompt.includes('"strengthen"'));
-		assert.ok(prompt.includes("old_text"));
-		assert.ok(prompt.includes("character-for-character"));
-	});
-
-	it("describes the add edit type", () => {
-		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
 		assert.ok(prompt.includes('"add"'));
+		assert.ok(prompt.includes('"remove"'));
+		assert.ok(prompt.includes('"merge"'));
+		assert.ok(prompt.includes("old_text"));
 		assert.ok(prompt.includes("after_text"));
-	});
-
-	it("mentions duplication prevention", () => {
-		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
-		assert.ok(prompt.includes("Never duplicate content"));
+		assert.ok(prompt.includes("merge_sources"));
 	});
 
 	it("requires 2+ occurrences for new rules", () => {
@@ -55,15 +48,14 @@ describe("buildReflectionPrompt", () => {
 
 	it("lists correction signals to look for", () => {
 		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
-		assert.ok(prompt.includes("bro"));
-		assert.ok(prompt.includes("wtf"));
-		assert.ok(prompt.includes("actually"));
+		assert.ok(prompt.includes("frustration"));
+		assert.ok(prompt.includes("correcting"));
 	});
 
 	it("warns about false positives", () => {
 		const prompt = buildReflectionPrompt("/AGENTS.md", "content", "transcripts");
 		assert.ok(prompt.includes("no worries"));
-		assert.ok(prompt.includes("NOT corrections"));
+		assert.ok(prompt.includes("Ignore normal flow"));
 	});
 
 	it("uses basename, not full path in prompt", () => {

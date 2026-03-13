@@ -14,6 +14,13 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import * as path from "node:path";
+import * as fs from "node:fs";
+
+/** Display a target path as "parentDir/filename" for compact but unambiguous listing */
+function targetLabel(filePath: string): string {
+	const dir = path.basename(path.dirname(filePath));
+	return `${dir}/${path.basename(filePath)}`;
+}
 
 import {
 	type ReflectTarget,
@@ -28,6 +35,7 @@ import {
 	runReflection,
 	collectTranscriptsForDate,
 	getAvailableSessionDates,
+	computeFileMetrics,
 	CONFIG_FILE,
 } from "./reflect.js";
 
@@ -80,10 +88,10 @@ export default function (pi: ExtensionAPI) {
 				} else if (ctx.hasUI) {
 					const choice = await ctx.ui.select(
 						"Which target?",
-						config.targets.map((t) => path.basename(t.path)),
+						config.targets.map((t) => targetLabel(t.path)),
 					);
 					if (choice === undefined || choice === null) return;
-					const chosenTarget = config.targets.find((t) => path.basename(t.path) === choice);
+					const chosenTarget = config.targets.find((t) => targetLabel(t.path) === choice);
 					if (!chosenTarget) return;
 					target = chosenTarget;
 				} else {
@@ -135,7 +143,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const lines = config.targets.map((t, i) => {
-				return `${i + 1}. **${path.basename(t.path)}** — ${t.schedule}, ${t.model}, ${t.lookbackDays}d lookback\n   ${t.path}`;
+				return `${i + 1}. **${targetLabel(t.path)}** — ${t.schedule}, ${t.model}, ${t.lookbackDays}d lookback\n   ${t.path}`;
 			});
 
 			ctx.ui.notify(
@@ -160,7 +168,7 @@ export default function (pi: ExtensionAPI) {
 			const recent = history.slice(-10).reverse();
 			const lines = recent.map((r) => {
 				const date = r.timestamp.slice(0, 16).replace("T", " ");
-				const file = path.basename(r.targetPath);
+				const file = targetLabel(r.targetPath);
 				return `- **${date}** ${file}: ${r.editsApplied} edits, ${r.correctionsFound} corrections (${r.sessionsAnalyzed} sessions)\n  ${r.summary}`;
 			});
 
@@ -197,15 +205,67 @@ export default function (pi: ExtensionAPI) {
 				byTarget.set(key, list);
 			}
 
+			// If multiple targets tracked, let user pick one (or show all)
+			if (byTarget.size > 1 && ctx.hasUI) {
+				const options = ["All targets", ...Array.from(byTarget.keys()).map((p) => targetLabel(p))];
+				const choice = await ctx.ui.select("Show stats for which target?", options);
+				if (choice === undefined || choice === null) return;
+				if (choice !== "All targets") {
+					// Filter to just the chosen target
+					const chosenPath = Array.from(byTarget.keys()).find((p) => targetLabel(p) === choice);
+					if (chosenPath) {
+						const runs = byTarget.get(chosenPath)!;
+						byTarget.clear();
+						byTarget.set(chosenPath, runs);
+					}
+				}
+			}
+
 			const output: string[] = [];
 			let targetIdx = 0;
 
 			for (const [targetPath, runs] of byTarget) {
-				const fileName = path.basename(targetPath);
+				const fileName = targetLabel(targetPath);
 				if (targetIdx > 0) output.push("", "---", "");
 				output.push(`# ${fileName}`);
 				output.push(`_${targetPath}_`);
 				output.push("");
+
+				// --- Current File Size ---
+				const resolvedPath = resolvePath(targetPath);
+				if (fs.existsSync(resolvedPath)) {
+					const current = computeFileMetrics(fs.readFileSync(resolvedPath, "utf-8"));
+					output.push(`### Current Size`);
+					output.push(`${current.chars.toLocaleString()} chars · ${current.words.toLocaleString()} words · ${current.lines.toLocaleString()} lines · ~${current.estTokens.toLocaleString()} tokens`);
+					output.push("");
+				}
+
+				// --- File Size Trend ---
+				const runsWithSize = runs.filter((r) => r.fileSize).sort((a, b) => getSourceDate(a).localeCompare(getSourceDate(b)));
+				if (runsWithSize.length >= 2) {
+					output.push("### File Size Trend");
+					output.push("");
+					for (const r of runsWithSize) {
+						const sz = r.fileSize!;
+						const date = getSourceDate(r);
+						const bar = "\u2588".repeat(Math.round(sz.estTokens / 1000));
+						output.push(`${date}  ${sz.chars.toLocaleString().padStart(7)} chars  ${sz.words.toLocaleString().padStart(6)} words  ~${sz.estTokens.toLocaleString().padStart(6)} tok  ${bar}`);
+					}
+
+					const first = runsWithSize[0].fileSize!;
+					const last = runsWithSize[runsWithSize.length - 1].fileSize!;
+					const charDelta = last.chars - first.chars;
+					const pct = first.chars > 0 ? ((charDelta / first.chars) * 100).toFixed(0) : "N/A";
+					output.push("");
+					if (charDelta > 0) {
+						output.push(`Trend: \u2191 grew ${charDelta.toLocaleString()} chars (+${pct}%) over ${runsWithSize.length} runs`);
+					} else if (charDelta < 0) {
+						output.push(`Trend: \u2193 shrank ${Math.abs(charDelta).toLocaleString()} chars (${pct}%) over ${runsWithSize.length} runs`);
+					} else {
+						output.push(`Trend: \u2194 unchanged`);
+					}
+					output.push("");
+				}
 
 				// --- Correction Rate Trend ---
 				output.push("### Correction Rate (corrections per session)");
@@ -391,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 			planLines.push("**Backfill plan (dry run — no file edits):**");
 			planLines.push("");
 			for (const p of plan) {
-				const fileName = path.basename(p.target.path);
+				const fileName = targetLabel(p.target.path);
 				planLines.push(`- **${fileName}**: ${p.dates.length} date(s) [${p.dates[0]} \u2192 ${p.dates[p.dates.length - 1]}]`);
 			}
 			planLines.push("");
@@ -415,7 +475,7 @@ export default function (pi: ExtensionAPI) {
 			const updatedHistory = loadHistory();
 
 			for (const p of plan) {
-				const fileName = path.basename(p.target.path);
+				const fileName = targetLabel(p.target.path);
 
 				for (const date of p.dates) {
 					ctx.ui.notify(`[${completed + failed + 1}/${totalCalls}] ${fileName} — ${date}...`, "info");
