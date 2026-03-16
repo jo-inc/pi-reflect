@@ -504,6 +504,68 @@ function isWithinLookback(filename: string, cutoff: string): boolean {
 	return match[1] >= cutoff;
 }
 
+function findGlobBaseDir(globPattern: string): string {
+	const normalized = path.normalize(globPattern);
+	const segments = normalized.split(path.sep);
+	const globIndex = segments.findIndex((segment) => segment.includes("*"));
+
+	if (globIndex === -1) return path.dirname(normalized);
+
+	const baseSegments = segments.slice(0, globIndex).filter(Boolean);
+	if (normalized.startsWith(path.sep)) {
+		return baseSegments.length > 0 ? path.join(path.sep, ...baseSegments) : path.sep;
+	}
+	return baseSegments.length > 0 ? path.join(...baseSegments) : ".";
+}
+
+function globToRegex(globPattern: string): RegExp {
+	const normalized = globPattern.split(path.sep).join("/");
+	const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+	const globstarToken = "__PI_REFLECT_GLOBSTAR__";
+	const withGlobstarToken = escaped.replace(/\*\*\/?/g, globstarToken);
+	const withWildcards = withGlobstarToken.replace(/\*/g, "[^/]*");
+	const withGlobstar = withWildcards.replaceAll(globstarToken, "(?:.*/)?");
+	return new RegExp(`^${withGlobstar}$`);
+}
+
+function walkFilesRecursive(dir: string): string[] {
+	const files: string[] = [];
+
+	try {
+		const entries = fs.readdirSync(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				files.push(...walkFilesRecursive(fullPath));
+			} else if (entry.isFile()) {
+				files.push(fullPath);
+			}
+		}
+	} catch {}
+
+	return files;
+}
+
+function findMatchingFiles(globPattern: string): { name: string; full: string }[] {
+	const baseDir = findGlobBaseDir(globPattern);
+	if (!fs.existsSync(baseDir)) return [];
+
+	const relativePattern = path.relative(baseDir, globPattern);
+	const relativeRegex = globToRegex(relativePattern);
+	const basenameRegex = !relativePattern.includes(path.sep) ? globToRegex(path.basename(globPattern)) : null;
+
+	return walkFilesRecursive(baseDir)
+		.filter((fullPath) => {
+			const relativePath = path.relative(baseDir, fullPath).split(path.sep).join("/");
+			const baseName = path.basename(fullPath);
+			return relativeRegex.test(relativePath) || (basenameRegex?.test(baseName) ?? false);
+		})
+		.map((fullPath) => ({
+			name: path.relative(baseDir, fullPath).split(path.sep).join("/"),
+			full: fullPath,
+		}));
+}
+
 export async function collectContext(sources: ContextSource[], lookbackDays: number): Promise<string> {
 	const parts: string[] = [];
 	const cutoff = lookbackCutoff(lookbackDays);
@@ -522,14 +584,7 @@ export async function collectContext(sources: ContextSource[], lookbackDays: num
 					let candidates: { name: string; full: string }[] = [];
 
 					if (expanded.includes("*")) {
-						const dir = path.dirname(expanded);
-						const filePattern = path.basename(expanded);
-						const regex = new RegExp("^" + filePattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
-						try {
-							candidates = fs.readdirSync(dir)
-								.filter(f => regex.test(f))
-								.map(f => ({ name: f, full: path.join(dir, f) }));
-						} catch {}
+						candidates = findMatchingFiles(expanded);
 					} else if (fs.existsSync(expanded)) {
 						candidates = [{ name: path.basename(expanded), full: expanded }];
 					}
