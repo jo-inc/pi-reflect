@@ -54,7 +54,7 @@ function makeDeps(llmResponseJson: string, transcripts = "### Session: test\n\n*
 function makeModelRegistry() {
 	return {
 		find: () => ({ provider: "test", id: "test-model" }),
-		getApiKey: async () => "test-key",
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: undefined }),
 	};
 }
 
@@ -96,7 +96,7 @@ describe("runReflection", () => {
 			...makeDeps("{}"),
 			getModel: () => null,
 		};
-		const registry = { find: () => null, getApiKey: async () => null };
+		const registry = { find: () => null, getApiKeyAndHeaders: async () => ({ ok: false, error: "no key" }) };
 		const result = await runReflection(target, registry, notify, deps);
 		assert.equal(result, null);
 		assert.ok(notifications.some(n => n.level === "error" && n.msg.includes("Model not found")));
@@ -108,7 +108,7 @@ describe("runReflection", () => {
 		const target = makeTarget({ path: fp });
 		const registry = {
 			find: () => ({ provider: "test", id: "test" }),
-			getApiKey: async () => null,
+			getApiKeyAndHeaders: async () => ({ ok: false, error: "No API key" }),
 		};
 		const result = await runReflection(target, registry, notify, makeDeps("{}"));
 		assert.equal(result, null);
@@ -312,7 +312,7 @@ describe("runReflection", () => {
 		let registryFindCalled = false;
 		const registry = {
 			find: () => { registryFindCalled = true; return { provider: "test", id: "test" }; },
-			getApiKey: async () => "test-key",
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: undefined }),
 		};
 		const deps: RunReflectionDeps = {
 			...makeDeps(llmResponse),

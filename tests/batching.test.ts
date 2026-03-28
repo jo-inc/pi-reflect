@@ -119,7 +119,7 @@ function makeTarget(overrides: Partial<ReflectTarget> = {}): ReflectTarget {
 function makeModelRegistry() {
 	return {
 		find: () => ({ provider: "test", id: "test-model" }),
-		getApiKey: async () => "test-key",
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: undefined }),
 	};
 }
 

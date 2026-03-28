@@ -106,17 +106,20 @@ export default function (pi: ExtensionAPI) {
 			// Use the current session model if available
 			let currentModel: any;
 			let currentModelApiKey: string | undefined;
+			let currentModelHeaders: Record<string, string> | undefined;
 			if (ctx.model) {
-				const key = await ctx.modelRegistry.getApiKey(ctx.model);
-				if (key) {
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+				if (auth.ok) {
 					currentModel = ctx.model;
-					currentModelApiKey = key;
+					currentModelApiKey = auth.apiKey;
+					currentModelHeaders = auth.headers;
 				}
 			}
 
 			const run = await runReflection(target, modelRegistryRef, notify, undefined, {
 				currentModel,
 				currentModelApiKey,
+				currentModelHeaders,
 			});
 
 			if (run) {

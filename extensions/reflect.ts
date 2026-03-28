@@ -131,6 +131,7 @@ export interface ReflectionOptions {
 	/** Override model — use the current session model instead of target.model */
 	currentModel?: any;
 	currentModelApiKey?: string;
+	currentModelHeaders?: Record<string, string>;
 }
 
 export type NotifyFn = (msg: string, level: "info" | "warning" | "error") => void;
@@ -906,6 +907,7 @@ async function analyzeTranscriptBatch(
 	context: string,
 	model: any,
 	apiKey: string,
+	headers: Record<string, string> | undefined,
 	modelLabel: string,
 	notify: NotifyFn,
 	completeFn: (model: any, request: any, options: any) => Promise<any>,
@@ -962,7 +964,7 @@ async function analyzeTranscriptBatch(
 			},
 		],
 		tools: [reflectAnalysisTool],
-	}, { apiKey, maxTokens: 16384 });
+	}, { apiKey, headers, maxTokens: 16384 });
 
 	if (response.stopReason === "error") {
 		notify(`LLM error: ${response.errorMessage ?? 'unknown'}`, "error");
@@ -1077,11 +1079,13 @@ export async function runReflection(
 	// Resolve model — prefer current session model over target.model config
 	let model: any;
 	let apiKey: string | undefined;
+	let headers: Record<string, string> | undefined;
 	let modelLabel: string;
 
 	if (options?.currentModel && options?.currentModelApiKey) {
 		model = options.currentModel;
 		apiKey = options.currentModelApiKey;
+		headers = options.currentModelHeaders;
 		modelLabel = `${model.provider}/${model.id}`;
 	} else {
 		const getModelFn = deps?.getModel ?? (await import("@mariozechner/pi-ai")).getModel;
@@ -1096,11 +1100,13 @@ export async function runReflection(
 			return null;
 		}
 
-		apiKey = await modelRegistry?.getApiKey(model);
-		if (!apiKey) {
+		const auth = await modelRegistry?.getApiKeyAndHeaders(model);
+		if (!auth?.ok) {
 			notify(`No API key for model: ${target.model}`, "error");
 			return null;
 		}
+		apiKey = auth.apiKey;
+		headers = auth.headers;
 		modelLabel = target.model;
 	}
 
@@ -1138,7 +1144,7 @@ export async function runReflection(
 
 			const result = await analyzeTranscriptBatch(
 				target, targetPath, currentContent, batchTranscripts, context,
-				model, apiKey!, modelLabel, notify, completeFn,
+				model, apiKey!, headers, modelLabel, notify, completeFn,
 			);
 
 			if (!result) continue;
@@ -1168,7 +1174,7 @@ export async function runReflection(
 		notify(`Analyzing with ${modelLabel}...`, "info");
 		const result = await analyzeTranscriptBatch(
 			target, targetPath, targetContent, transcripts, context,
-			model, apiKey!, modelLabel, notify, completeFn,
+			model, apiKey!, headers, modelLabel, notify, completeFn,
 		);
 		if (!result) return null;
 		allEdits = result.edits;
