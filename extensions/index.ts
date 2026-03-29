@@ -107,8 +107,9 @@ export default function (pi: ExtensionAPI) {
 			let currentModel: any;
 			let currentModelApiKey: string | undefined;
 			if (ctx.model) {
-				const key = await ctx.modelRegistry.getApiKey(ctx.model);
-				if (key) {
+				const authResult = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+				if (authResult.ok && authResult.apiKey) {
+					const key = authResult.apiKey;
 					currentModel = ctx.model;
 					currentModelApiKey = key;
 				}
