@@ -1041,11 +1041,12 @@ export async function runReflection(
 			return null;
 		}
 
-		apiKey = await modelRegistry?.getApiKey(model);
-		if (!apiKey) {
+		const authResult = await modelRegistry?.getApiKeyAndHeaders(model);
+		if (!authResult?.ok || !authResult.apiKey) {
 			notify(`No API key for model: ${target.model}`, "error");
 			return null;
 		}
+		apiKey = authResult.apiKey;
 		modelLabel = target.model;
 	}
 
