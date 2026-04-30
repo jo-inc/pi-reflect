@@ -1100,13 +1100,13 @@ export async function runReflection(
 			return null;
 		}
 
-		const auth = await modelRegistry?.getApiKeyAndHeaders(model);
-		if (!auth?.ok) {
+		// ModelRegistry API: getApiKey returns the key string directly (not {ok, apiKey, headers})
+		apiKey = await modelRegistry?.getApiKey(model);
+		if (!apiKey) {
 			notify(`No API key for model: ${target.model}`, "error");
 			return null;
 		}
-		apiKey = auth.apiKey;
-		headers = auth.headers;
+		headers = undefined;
 		modelLabel = target.model;
 	}
 

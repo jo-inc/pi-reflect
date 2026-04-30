@@ -108,11 +108,12 @@ export default function (pi: ExtensionAPI) {
 			let currentModelApiKey: string | undefined;
 			let currentModelHeaders: Record<string, string> | undefined;
 			if (ctx.model) {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-				if (auth.ok) {
+				// ModelRegistry API: getApiKey returns the key string directly
+				const key = await ctx.modelRegistry.getApiKey(ctx.model);
+				if (key) {
 					currentModel = ctx.model;
-					currentModelApiKey = auth.apiKey;
-					currentModelHeaders = auth.headers;
+					currentModelApiKey = key;
+					currentModelHeaders = undefined;
 				}
 			}
 
