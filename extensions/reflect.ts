@@ -1001,6 +1001,27 @@ async function analyzeTranscriptBatch(
 
 // --- Main reflection logic ---
 
+async function resolveModelAuth(
+	modelRegistry: any,
+	model: any,
+): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error?: string }> {
+	if (!modelRegistry) return { ok: false, error: "model registry unavailable" };
+
+	if (typeof modelRegistry.getApiKeyAndHeaders === "function") {
+		const auth = await modelRegistry.getApiKeyAndHeaders(model);
+		if (auth?.ok) return { ok: true, apiKey: auth.apiKey, headers: auth.headers };
+		return { ok: false, error: auth?.error };
+	}
+
+	if (typeof modelRegistry.getApiKey === "function") {
+		const apiKey = await modelRegistry.getApiKey(model);
+		if (apiKey) return { ok: true, apiKey, headers: undefined };
+		return { ok: false, error: "No API key" };
+	}
+
+	return { ok: false, error: "model registry does not expose getApiKeyAndHeaders or getApiKey" };
+}
+
 export interface RunReflectionDeps {
 	completeSimple: (model: any, request: any, options: any) => Promise<any>;
 	getModel: (provider: string, modelId: string) => any;
@@ -1100,13 +1121,13 @@ export async function runReflection(
 			return null;
 		}
 
-		// ModelRegistry API: getApiKey returns the key string directly (not {ok, apiKey, headers})
-		apiKey = await modelRegistry?.getApiKey(model);
-		if (!apiKey) {
-			notify(`No API key for model: ${target.model}`, "error");
+		const auth = await resolveModelAuth(modelRegistry, model);
+		if (!auth.ok) {
+			notify(`No API key for model: ${target.model}${auth.error ? ` (${auth.error})` : ""}`, "error");
 			return null;
 		}
-		headers = undefined;
+		apiKey = auth.apiKey;
+		headers = auth.headers;
 		modelLabel = target.model;
 	}
 
