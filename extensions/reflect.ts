@@ -704,7 +704,8 @@ Guidelines:
 - When strengthening, make the rule SHORTER and CLEARER — don't add history or examples unless essential.
 - Strip "This happened in N sessions", "RECURRING", session dates, escalating violation counts. The rule text is enough.
 - Don't reorganize or restructure the file. Minimal, targeted edits only.
-- Don't add one-off rules. Only patterns with 2+ occurrences.
+- Copy anchors character-for-character from the target file. Do not abbreviate, paraphrase, truncate, normalize punctuation, or use ellipses in old_text, after_text, or merge_sources.
+- If you cannot copy one unique exact anchor, return no edit for that pattern.
 
 ## Step 3: Output
 
@@ -953,8 +954,12 @@ async function analyzeTranscriptBatch(
 	modelLabel: string,
 	notify: NotifyFn,
 	completeFn: (model: any, request: any, options: any) => Promise<any>,
+	anchorFailures: string[] = [],
 ): Promise<AnalysisResult | null> {
-	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts, context);
+	const prompt = buildPromptForTarget(target, targetPath, targetContent, transcripts, context)
+		+ (anchorFailures.length > 0
+			? `\n\n## Required retry\nYour prior edit anchors did not exactly match the target file:\n${anchorFailures.map((failure) => `- ${failure}`).join("\n")}\nReturn only edits with anchors copied character-for-character from <target_file>. Do not abbreviate, paraphrase, or use ellipses. If there is no exact unique anchor, return no edit.`
+			: "");
 
 	const reflectAnalysisTool = buildReflectAnalysisTool();
 
@@ -1209,11 +1214,24 @@ export async function runReflection(
 		}
 	} else {
 		notify(`Analyzing with ${modelLabel}...`, "info");
-		const result = await analyzeTranscriptBatch(
+		let result = await analyzeTranscriptBatch(
 			target, targetPath, targetContent, transcripts, context,
 			model, apiKey!, headers, modelLabel, notify, completeFn,
 		);
 		if (!result) return null;
+
+		// A model can still paraphrase an anchor despite the prompt. Retry once with
+		// the rejected anchors and the original target instead of silently losing a
+		// valid reflection opportunity. applyEdits remains exact and safe.
+		const firstAttempt = result.edits.length > 0 ? applyEdits(targetContent, result.edits) : undefined;
+		if (firstAttempt && firstAttempt.applied === 0) {
+			notify(`Retrying ${result.edits.length} edit(s) with exact target-file anchors.`, "warning");
+			const retry = await analyzeTranscriptBatch(
+				target, targetPath, targetContent, transcripts, context,
+				model, apiKey!, headers, modelLabel, notify, completeFn, firstAttempt.skipped,
+			);
+			if (retry) result = retry;
+		}
 		allEdits = result.edits;
 		totalCorrectionsFound = result.correctionsFound;
 		if (result.summary) allSummaries.push(result.summary);

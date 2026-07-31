@@ -187,6 +187,32 @@ describe("runReflection", () => {
 		assert.equal(backupContent, SAMPLE_AGENTS_MD);
 	});
 
+	it("retries once when a model paraphrases an edit anchor", async () => {
+		const fp = path.join(tmpDir, "AGENTS.md");
+		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
+		const exactOldText = "- **Keep code DRY**: NEVER duplicate logic.";
+		let calls = 0;
+		const prompts: string[] = [];
+		const deps: RunReflectionDeps = {
+			...makeDeps("{}"),
+			completeSimple: async (_model, request) => {
+				prompts.push(request.messages[0].content[0].text);
+				calls++;
+				const edits = calls === 1
+					? [{ type: "strengthen", old_text: "- **Keep code DRY**: NEVER duplicate...", new_text: "- **Keep code DRY**: Share helpers." }]
+					: [{ type: "strengthen", old_text: exactOldText, new_text: "- **Keep code DRY**: Share helpers." }];
+				return { content: [{ type: "text", text: makeLlmResponse(edits, 1) }] };
+			},
+		};
+
+		const result = await runReflection(makeTarget({ path: fp }), makeModelRegistry(), notify, deps);
+		assert.equal(calls, 2);
+		assert.equal(result?.editsApplied, 1);
+		assert.ok(prompts[1].includes("Required retry"));
+		assert.ok(prompts[1].includes("Could not find text to strengthen"));
+		assert.ok(fs.readFileSync(fp, "utf-8").includes("Share helpers."));
+	});
+
 	it("returns null and cleans up backup when all edits fail", async () => {
 		const fp = path.join(tmpDir, "AGENTS.md");
 		fs.writeFileSync(fp, SAMPLE_AGENTS_MD);
