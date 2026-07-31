@@ -1184,12 +1184,22 @@ export async function runReflection(
 			const currentContent = i === 0 ? targetContent : fs.readFileSync(targetPath, "utf-8");
 			notify(`Analyzing batch ${i + 1}/${batches.length} (${batches[i].length} sessions, ${(batchTranscripts.length / 1024).toFixed(0)}KB) with ${modelLabel}...`, "info");
 
-			const result = await analyzeTranscriptBatch(
+			let result = await analyzeTranscriptBatch(
 				target, targetPath, currentContent, batchTranscripts, context,
 				model, apiKey!, headers, modelLabel, notify, completeFn,
 			);
 
 			if (!result) continue;
+
+			const firstAttempt = result.edits.length > 0 ? applyEdits(currentContent, result.edits) : undefined;
+			if (firstAttempt && firstAttempt.applied === 0) {
+				notify(`Batch ${i + 1}: retrying ${result.edits.length} edit(s) with exact target-file anchors.`, "warning");
+				const retry = await analyzeTranscriptBatch(
+					target, targetPath, currentContent, batchTranscripts, context,
+					model, apiKey!, headers, modelLabel, notify, completeFn, firstAttempt.skipped,
+				);
+				if (retry) result = retry;
+			}
 
 			allEdits.push(...result.edits);
 			totalCorrectionsFound += result.correctionsFound;
