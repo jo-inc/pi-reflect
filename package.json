@@ -36,8 +36,8 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-ai": "*"
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-ai": "^0.81.1"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

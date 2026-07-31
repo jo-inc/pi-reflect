@@ -12,7 +12,7 @@
  *   pi -p --no-session "/reflect /path/to/AGENTS.md"
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -436,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Resolve model for cost estimation
-			const { getModel } = await import("@mariozechner/pi-ai");
+			const { getModel } = await import("@earendil-works/pi-ai/compat");
 			const target0 = plan[0].target;
 			const [provider, modelId] = target0.model.split("/", 2);
 			let model = getModel(provider as any, modelId as any);
