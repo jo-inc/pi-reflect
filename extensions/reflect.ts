@@ -5,6 +5,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -704,6 +705,7 @@ Guidelines:
 - When strengthening, make the rule SHORTER and CLEARER — don't add history or examples unless essential.
 - Strip "This happened in N sessions", "RECURRING", session dates, escalating violation counts. The rule text is enough.
 - Don't reorganize or restructure the file. Minimal, targeted edits only.
+- Sections whose heading contains "DO NOT EDIT" are maintained by the user and are READ-ONLY. Never propose strengthen/remove/merge/add edits whose anchors fall inside them, never shorten or move their examples, and do not duplicate their rules elsewhere. Edits touching them are rejected automatically.
 - Copy anchors character-for-character from the target file. Do not abbreviate, paraphrase, truncate, normalize punctuation, or use ellipses in old_text, after_text, or merge_sources.
 - If you cannot copy one unique exact anchor, return no edit for that pattern.
 
@@ -750,14 +752,120 @@ export function buildPromptForTarget(target: ReflectTarget, targetPath: string, 
 		.replace(/\{context\}/g, context ?? "");
 }
 
+// --- Protected sections ---
+
+/** True when the target file has uncommitted changes in its Git repository. */
+export function hasUncommittedChanges(targetPath: string): boolean {
+	try {
+		const realPath = fs.realpathSync(targetPath);
+		const repoDir = path.dirname(realPath);
+		if (!fs.existsSync(path.join(repoDir, ".git"))) return false;
+		const out = execFileSync("git", ["status", "--porcelain", "--", path.basename(realPath)], { cwd: repoDir, timeout: 5000 }).toString();
+		return out.trim().length > 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A Markdown section is protected when its heading contains "DO NOT EDIT" (for
+ * example "## BEHAVIORAL REQUIREMENTS [DO NOT EDIT AS PART OF REFLECTION]"),
+ * or when text is wrapped in <!-- reflect:protected --> ... <!-- /reflect:protected -->.
+ * A heading-based section runs until the next heading of the same or higher level.
+ */
+export interface ProtectedRange {
+	start: number;
+	end: number; // exclusive
+	text: string;
+	label: string;
+}
+
+const PROTECTED_HEADING = /^(#{1,6})\s.*DO NOT EDIT/i;
+const PROTECTED_OPEN = "<!-- reflect:protected -->";
+const PROTECTED_CLOSE = "<!-- /reflect:protected -->";
+
+export function findProtectedRanges(content: string): ProtectedRange[] {
+	const ranges: ProtectedRange[] = [];
+	const lines = content.split("\n");
+	const offsets: number[] = [];
+	let pos = 0;
+	for (const line of lines) {
+		offsets.push(pos);
+		pos += line.length + 1;
+	}
+
+	for (let i = 0; i < lines.length; i++) {
+		const m = lines[i].match(PROTECTED_HEADING);
+		if (!m) continue;
+		const level = m[1].length;
+		let j = i + 1;
+		for (; j < lines.length; j++) {
+			const h = lines[j].match(/^(#{1,6})\s/);
+			if (h && h[1].length <= level) break;
+		}
+		const start = offsets[i];
+		const end = j < lines.length ? offsets[j] : content.length;
+		ranges.push({ start, end, text: content.slice(start, end), label: lines[i].trim() });
+		i = j - 1;
+	}
+
+	let from = 0;
+	while (true) {
+		const open = content.indexOf(PROTECTED_OPEN, from);
+		if (open === -1) break;
+		const close = content.indexOf(PROTECTED_CLOSE, open);
+		const end = close === -1 ? content.length : close + PROTECTED_CLOSE.length;
+		ranges.push({ start: open, end, text: content.slice(open, end), label: "reflect:protected block" });
+		from = end;
+	}
+
+	return ranges.sort((a, b) => a.start - b.start);
+}
+
+function anchorInProtected(content: string, anchor: string, ranges: ProtectedRange[]): ProtectedRange | null {
+	const idx = content.indexOf(anchor);
+	if (idx === -1) return null;
+	const endIdx = idx + anchor.length;
+	for (const r of ranges) {
+		if (idx < r.end && endIdx > r.start) return r;
+	}
+	return null;
+}
+
+function editTouchesProtected(content: string, edit: AnalysisEdit, ranges: ProtectedRange[]): string | null {
+	if (ranges.length === 0) return null;
+	const anchors: string[] = [];
+	if (edit.old_text) anchors.push(edit.old_text);
+	if (edit.after_text) anchors.push(edit.after_text);
+	if (edit.merge_sources) anchors.push(...edit.merge_sources);
+	for (const a of anchors) {
+		const hit = anchorInProtected(content, a, ranges);
+		if (hit) return hit.label;
+	}
+	return null;
+}
+
+function protectedIntact(result: string, ranges: ProtectedRange[]): boolean {
+	return ranges.every((r) => result.includes(r.text));
+}
+
 // --- Edit application ---
 
 export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 	let result = content;
 	let applied = 0;
 	const skipped: string[] = [];
+	const protectedRanges = findProtectedRanges(content);
 
 	for (const edit of edits) {
+		const protectedLabel = editTouchesProtected(result, edit, protectedRanges);
+		if (protectedLabel) {
+			skipped.push(`Refused edit inside protected section (${protectedLabel}): ${JSON.stringify(edit.reason ?? edit.type).slice(0, 80)}`);
+			continue;
+		}
+		const before = result;
+		const appliedBefore = applied;
+
 		if (edit.type === "strengthen" && edit.old_text && edit.new_text) {
 			if (!result.includes(edit.old_text)) {
 				skipped.push(`Could not find text to strengthen: "${edit.old_text.slice(0, 80)}..."`);
@@ -854,6 +962,13 @@ export function applyEdits(content: string, edits: AnalysisEdit[]): EditResult {
 			applied++;
 		} else {
 			skipped.push(`Invalid edit: ${JSON.stringify(edit).slice(0, 100)}`);
+		}
+
+		// Hard guarantee: protected text must survive every edit byte-for-byte.
+		if (applied > appliedBefore && !protectedIntact(result, protectedRanges)) {
+			result = before;
+			applied = appliedBefore;
+			skipped.push(`Reverted edit that altered a protected section: ${JSON.stringify(edit.reason ?? edit.type).slice(0, 80)}`);
 		}
 	}
 
@@ -1059,6 +1174,10 @@ export async function runReflection(
 	if (targetContent.length < 100) {
 		notify(`Target file too small (${targetContent.length} bytes): ${targetPath}`, "error");
 		return null;
+	}
+	const preexistingTargetChanges = hasUncommittedChanges(targetPath);
+	if (preexistingTargetChanges) {
+		notify(`${path.basename(targetPath)} has uncommitted manual edits; they will be committed separately before the reflect commit.`, "info");
 	}
 
 	// Collect transcripts — supports new `transcripts` array (ContextSource[]) or legacy `transcriptSource`
@@ -1369,15 +1488,24 @@ export async function runReflection(
 
 	notify(combinedSummary, "info");
 
-	// Git commit
+	// Git commit — only the target file, so unrelated work in the repo is untouched.
 	try {
 		const realPath = fs.realpathSync(targetPath);
 		const repoDir = path.dirname(realPath);
 		if (fs.existsSync(path.join(repoDir, ".git"))) {
-			const { execFileSync } = require("node:child_process");
-			execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
-			execFileSync("git", ["commit", "-m", `reflect: ${path.basename(realPath)} — ${totalApplied} edits from ${totalSessionCount} sessions`, "--no-verify"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
-			notify(`Committed to ${path.basename(repoDir)}`, "info");
+			const rel = path.basename(realPath);
+			if (preexistingTargetChanges) {
+				// Manual edits were sitting uncommitted before reflection ran. Commit them
+				// on their own so they are visible in history instead of being folded into
+				// the reflect commit.
+				fs.writeFileSync(targetPath, targetContent, "utf-8");
+				execFileSync("git", ["add", "--", rel], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
+				execFileSync("git", ["commit", "-m", `reflect: preserve manual edits to ${rel} made before reflection`, "--no-verify"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
+				fs.writeFileSync(targetPath, finalContent, "utf-8");
+			}
+			execFileSync("git", ["add", "--", rel], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
+			execFileSync("git", ["commit", "-m", `reflect: ${rel} — ${totalApplied} edits from ${totalSessionCount} sessions`, "--no-verify"], { cwd: repoDir, stdio: "ignore", timeout: 5000 });
+			notify(`Committed ${rel} to ${path.basename(repoDir)}`, "info");
 		}
 	} catch {}
 
