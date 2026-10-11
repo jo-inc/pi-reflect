@@ -869,7 +869,13 @@ export function buildTranscriptBatches(sessions: SessionData[], maxBytes: number
 	let currentSize = 0;
 
 	for (const sd of sessions) {
-		const entry = sd.transcript + "\n---\n\n";
+		let entry = sd.transcript + "\n---\n\n";
+		// A single long session can exceed the batch budget by itself. Truncate it
+		// rather than sending an oversized request that the provider must reject.
+		if (entry.length > maxBytes) {
+			const notice = "\n\n[...session truncated to fit the reflection context budget]\n---\n\n";
+			entry = entry.slice(0, maxBytes - notice.length) + notice;
+		}
 		if (currentSize + entry.length > maxBytes && currentBatch.length > 0) {
 			batches.push(currentBatch);
 			currentBatch = [];
